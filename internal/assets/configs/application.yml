@@ -1,0 +1,3 @@
+# Application defaults (embedded into the binary).
+# settings_docs_url is appended to invalid settings.yml / config-dir error messages.
+settings_docs_url: "https://github.com/uservseatb/apinfra#config-repository"

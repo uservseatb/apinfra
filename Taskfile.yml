@@ -1,0 +1,51 @@
+version: "3"
+
+vars:
+  BINARY_NAME: '{{.BINARY_NAME | default "apinfra"}}'
+  VERSION: '{{.VERSION | default "0.1.0"}}'
+  ARCH: '{{.ARCH | default "amd64"}}'
+
+tasks:
+  fmt:
+    desc: Format Go sources
+    cmds:
+      - go fmt ./...
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
+  test:
+    desc: Run all tests with race detector
+    cmds:
+      - go test -v -race -cover ./...
+
+  build:
+    desc: Build the binary under bin/ for local OS
+    cmds:
+      - go build -ldflags "-w -s -X main.Version={{.VERSION}}+local" -o bin/{{.BINARY_NAME}} ./cmd
+
+  package:
+    desc: Build and package .deb via nFPM (runs package.sh)
+    env:
+      VERSION: "{{.VERSION}}"
+      ARCH: "{{.ARCH}}"
+    cmds:
+      - bash ./build/deb/package.sh
+
+  check:
+    desc: Run all checks (fmt, vet, lint, test) before commit
+    deps: [fmt, vet, lint]
+    cmds:
+      - task: test
+
+  default:
+    desc: Default task
+    cmds:
+      - task: check

@@ -1,0 +1,32 @@
+#!/bin/sh
+# preinst: create the dedicated user before package files are unpacked
+# into /home/ap (binary ownership requires the account to exist).
+set -e
+
+APINFRA_USER="${APINFRA_USER:-ap}"
+
+# Fallback: create group docker if missing (e.g. unusual configure order).
+# docker.io reuses an existing docker group.
+ensure_docker_group() {
+  if getent group docker >/dev/null 2>&1; then
+    return
+  fi
+  echo "apinfra: creating group docker (docker.io not configured yet)"
+  groupadd --system docker
+}
+
+case "$1" in
+  install|upgrade)
+    if id "${APINFRA_USER}" >/dev/null 2>&1; then
+      echo "apinfra: user ${APINFRA_USER} already exists"
+    else
+      echo "apinfra: creating user ${APINFRA_USER}"
+      useradd --create-home --shell /bin/bash "${APINFRA_USER}"
+    fi
+
+    ensure_docker_group
+    usermod -aG docker "${APINFRA_USER}"
+    ;;
+esac
+
+exit 0

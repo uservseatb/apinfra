@@ -1,0 +1,30 @@
+#!/bin/sh
+
+TARGET_USER="ap"
+TIMER_NAME="apinfra.timer"
+SERVICE_NAME="apinfra.service"
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    echo "=== [apinfra] Starting post-removal automated cleanup ==="
+
+    USER_UID=$(id -u "$TARGET_USER" 2>/dev/null || true)
+    if [ -n "$USER_UID" ]; then
+        export XDG_RUNTIME_DIR="/run/user/$USER_UID"
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_UID/bus"
+
+        echo "[apinfra] Stopping and disabling systemd user units..."
+        sudo -u "$TARGET_USER" systemctl --user stop "$TIMER_NAME" "$SERVICE_NAME" 2>/dev/null || true
+        sudo -u "$TARGET_USER" systemctl --user disable "$TIMER_NAME" "$SERVICE_NAME" 2>/dev/null || true
+        sudo -u "$TARGET_USER" systemctl --user daemon-reload 2>/dev/null || true
+
+        echo "[apinfra] Disabling linger for user: $TARGET_USER..."
+        loginctl disable-linger "$TARGET_USER" 2>/dev/null || true
+    fi
+
+    echo "[apinfra] Enforcing symlink removal from user home directory..."
+    rm -f "/home/$TARGET_USER/.config/systemd/user/timers.target.wants/$TIMER_NAME"
+
+    echo "=== [apinfra] Post-removal cleanup finished successfully ==="
+fi
+
+exit 0

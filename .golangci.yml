@@ -1,0 +1,143 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  exclusions:
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+  max-same-issues: 3
+  max-issues-per-linter: 0
+
+linters:
+  default: all
+  enable:
+    - exhaustruct_v5
+    - gomodguard_v2
+    - wsl_v5
+  disable:
+    - exhaustruct
+    - gomodguard
+    - wsl
+  settings:
+    govet:
+      enable:
+        - shadow
+    revive:
+      rules:
+        - name: package-comments
+          disabled: true
+        - name: unexported-return
+          disabled: true
+    depguard:
+      rules:
+        main:
+          allow:
+            - bufio
+            - bytes
+            - context
+            - crypto
+            - crypto/rand
+            - crypto/rsa
+            - crypto/x509
+            - crypto/x509/pkix
+            - embed
+            - encoding/json
+            - encoding/pem
+            - errors
+            - fmt
+            - io
+            - io/fs
+            - log
+            - maps
+            - math/big
+            - net
+            - net/http
+            - os
+            - os/exec
+            - os/signal
+            - path
+            - path/filepath
+            - regexp
+            - slices
+            - sort
+            - strconv
+            - strings
+            - sync
+            - syscall
+            - testing
+            - time
+            - github.com/uservseatb/apinfra
+            - github.com/compose-spec/compose-go
+            - github.com/go-acme/lego
+            - github.com/go-git/go-billy
+            - github.com/go-git/go-git
+            - github.com/moby/moby
+            - gopkg.in/yaml.v3
+    tagliatelle:
+      case:
+        rules:
+          yaml: snake
+    varnamelen:
+      min-name-length: 3
+      ignore-names:
+        - sb
+        - id
+        - db
+        - ok
+        - err
+        - i
+        - n
+        - a
+        - b
+        - c
+        - r
+        - t
+    cyclop:
+      max-complexity: 15
+    funlen:
+      lines: 85
+      statements: 50
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+    rules:
+      - path: '_test\.go$'
+        linters:
+          - exhaustruct_v5
+          - funlen
+          - cyclop
+          - gocognit
+          - goconst
+          - paralleltest
+          - ireturn
+          - lll
+      - path: '_test\.go$'
+        text: "G301|G302"
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

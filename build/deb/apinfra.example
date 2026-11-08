@@ -1,0 +1,50 @@
+namespace=dev
+
+# Config repository (HTTPS). Leave repoToken empty for public repos.
+repo=https://github.com/uservseatb/apinfra-demo-conf.git
+repoToken=
+repoBranch=main
+
+# Optional: private container registry. Leave empty to skip docker login.
+containerRegistryHost=
+containerRegistryUser=
+containerRegistryToken=
+
+# ACME certificate authority: letsencrypt (default) or zerossl.
+certs.provider=letsencrypt
+
+# Optional: if set, DNS preflight (dig +short) requires this IP among answers.
+# If unset, any IP from dig +short is enough.
+#certs.publicIP=203.0.113.10
+
+# Non–rate-limit failures: attempts before block, and block length in hours.
+certs.triesCount=3
+certs.blockHours=24
+
+# Hours to keep .downgradeCertMode override after ACME rate limit / HTTP 429.
+certs.downgradeCertModeHours=24
+
+# When certs.provider is zerossl, the following required parameters must be set.
+# These can be obtained from the ZeroSSL panel.
+# If set while certs.provider=letsencrypt, ZeroSSL is used as rate-limit fallback.
+#certs.zerossl.AcmeKid=
+#certs.zerossl.AcmeHmac=
+
+# useExecLogs=false
+#
+# Per-operation timeouts (Go duration, must be > 0). Omitted → defaults below.
+# gitTimeout=1m                    # default 1m
+# dockerLoginTimeout=1m            # default 1m
+# dockerComposePullTimeout=10m     # default 10m
+# dockerComposeUpTimeout=5m        # default 5m
+# dockerComposeDownTimeout=2m      # default 2m
+# dockerPruneTimeout=2m            # default 2m
+# dockerAPITimeout=30s             # container list, default 30s
+# nginxCLITimeout=30s              # nginx -t / reload, default 30s
+# domainPrecheckTimeout=15s        # domain check (dig +short), default 15s
+# certIssueTimeout=1m              # ACME obtain, default 1m
+
+# Optional ACME CA directory URLs (lego CADirURL). Omitted → public CA defaults.
+#certs.letsencrypt.directory=https://acme-v02.api.letsencrypt.org/directory
+#certs.letsencrypt.stagingDirectory=https://acme-staging-v02.api.letsencrypt.org/directory
+#certs.zerossl.directory=https://acme.zerossl.com/v2/DV90

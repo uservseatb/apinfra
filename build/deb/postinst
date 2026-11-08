@@ -1,0 +1,196 @@
+#!/bin/sh
+# postinst: .apinfra + .env, docker group, user systemd timer for `ap`.
+# Docker Engine is a Depends (docker.io | docker-ce); apt should configure it
+# first. User is created in preinst; group docker is still created if missing.
+set -e
+
+APINFRA_USER="${APINFRA_USER:-ap}"
+APINFRA_HOME="/home/${APINFRA_USER}"
+CONFIG_EXAMPLE="/usr/share/apinfra/apinfra.example"
+CONFIG_DST="${APINFRA_HOME}/.apinfra"
+ENV_EXAMPLE="/usr/share/apinfra/env.example"
+ENV_DST="${APINFRA_HOME}/.env"
+BIN_PATH="${APINFRA_HOME}/apinfra"
+
+secure_file() {
+  path="$1"
+  if [ ! -f "${path}" ]; then
+    return
+  fi
+  chown "${APINFRA_USER}:${APINFRA_USER}" "${path}"
+  chmod 600 "${path}"
+}
+
+install_config_file() {
+  if [ -f "${CONFIG_DST}" ]; then
+    echo "apinfra: keeping existing ${CONFIG_DST}"
+    secure_file "${CONFIG_DST}"
+    return
+  fi
+
+  if [ ! -f "${CONFIG_EXAMPLE}" ]; then
+    echo "apinfra: WARN ${CONFIG_EXAMPLE} missing; create ${CONFIG_DST} manually"
+    return
+  fi
+
+  echo "apinfra: installing ${CONFIG_DST} from apinfra.example"
+  cp "${CONFIG_EXAMPLE}" "${CONFIG_DST}"
+  # Owner-only read/write: tokens must not be group/world-readable.
+  secure_file "${CONFIG_DST}"
+}
+
+install_env_file() {
+  if [ -f "${ENV_DST}" ]; then
+    echo "apinfra: keeping existing ${ENV_DST}"
+    secure_file "${ENV_DST}"
+    return
+  fi
+
+  if [ ! -f "${ENV_EXAMPLE}" ]; then
+    echo "apinfra: WARN ${ENV_EXAMPLE} missing; create ${ENV_DST} manually"
+    return
+  fi
+
+  echo "apinfra: installing ${ENV_DST} from env.example"
+  cp "${ENV_EXAMPLE}" "${ENV_DST}"
+  # Owner-only read/write: secrets must not be group/world-readable.
+  secure_file "${ENV_DST}"
+}
+
+# Ensure group docker exists, add ap, restart user@ so linger/timer get SUPGID=docker.
+# With Depends, docker.io usually configures first; creating the group if missing
+# remains a safe fallback (docker.io reuses an existing docker group).
+ensure_docker_group_and_refresh_user() {
+  if ! id "${APINFRA_USER}" >/dev/null 2>&1; then
+    echo "apinfra: WARN user ${APINFRA_USER} missing; skip docker group"
+    return
+  fi
+
+  if ! getent group docker >/dev/null 2>&1; then
+    echo "apinfra: creating group docker (docker.io not configured yet)"
+    groupadd --system docker
+  fi
+
+  echo "apinfra: adding ${APINFRA_USER} to group docker"
+  usermod -aG docker "${APINFRA_USER}" || true
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now docker 2>/dev/null || true
+  fi
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+
+  uid="$(id -u "${APINFRA_USER}")"
+  echo "apinfra: restarting user@${uid}.service to refresh supplementary groups"
+  systemctl restart "user@${uid}.service" 2>/dev/null \
+    || systemctl start "user@${uid}.service" 2>/dev/null \
+    || true
+}
+
+# Run systemctl --user as APINFRA_USER (after user@ is up).
+user_systemctl() {
+  uid="$(id -u "${APINFRA_USER}")"
+  runtime_dir="/run/user/${uid}"
+  if systemctl --user -M "${APINFRA_USER}@" "$@" 2>/dev/null; then
+    return 0
+  fi
+  runuser -u "${APINFRA_USER}" -- env \
+    XDG_RUNTIME_DIR="${runtime_dir}" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
+    systemctl --user "$@"
+}
+
+# Wait until user systemd manager is reachable, or fail after timeout (seconds).
+USER_RUNTIME_WAIT_SEC="${USER_RUNTIME_WAIT_SEC:-15}"
+
+wait_for_user_runtime() {
+  uid="$(id -u "${APINFRA_USER}")"
+  runtime_dir="/run/user/${uid}"
+  deadline=$(($(date +%s) + USER_RUNTIME_WAIT_SEC))
+
+  echo "apinfra: waiting for user@${uid} runtime (timeout ${USER_RUNTIME_WAIT_SEC}s)..."
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if [ -S "${runtime_dir}/bus" ] || systemctl --user -M "${APINFRA_USER}@" status >/dev/null 2>&1; then
+      echo "apinfra: user@${uid} runtime ready"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "apinfra: WARN timed out after ${USER_RUNTIME_WAIT_SEC}s waiting for ${runtime_dir}"
+  return 1
+}
+
+# Reload unit files from the package and restart the timer so upgrades apply
+# (enable alone does not refresh an already-active timer).
+reload_user_units() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "apinfra: WARN systemctl not found; skip user unit reload"
+    return
+  fi
+
+  if command -v loginctl >/dev/null 2>&1; then
+    loginctl enable-linger "${APINFRA_USER}" || true
+  fi
+
+  uid="$(id -u "${APINFRA_USER}")"
+  runtime_dir="/run/user/${uid}"
+
+  systemctl start "user@${uid}.service" 2>/dev/null || true
+  if ! wait_for_user_runtime; then
+    echo "apinfra: WARN user runtime not ready (${runtime_dir}); timer/service will apply after next login/reboot"
+    return
+  fi
+
+  # User overrides (e.g. from `systemctl --user edit --full`) mask packaged
+  # units under /usr/lib/systemd/user/. Remove them on install/upgrade so the
+  # package timer/service (AccuracySec, ExecStart, …) actually apply.
+  user_cfg="${APINFRA_HOME}/.config/systemd/user"
+  for u in apinfra.timer apinfra.service; do
+    override="${user_cfg}/${u}"
+    dropin="${user_cfg}/${u}.d"
+    if [ -e "${override}" ]; then
+      echo "apinfra: removing user override ${override} (was masking packaged unit)"
+      rm -f "${override}"
+    fi
+    if [ -d "${dropin}" ]; then
+      echo "apinfra: removing user drop-ins ${dropin} (were masking packaged unit)"
+      rm -rf "${dropin}"
+    fi
+  done
+
+  echo "apinfra: daemon-reload + restart apinfra.timer for user ${APINFRA_USER}"
+  user_systemctl daemon-reload || true
+  user_systemctl enable apinfra.timer || true
+  user_systemctl restart apinfra.timer || true
+
+  # Kick one update without blocking apt (oneshot would otherwise hold dpkg).
+  echo "apinfra: starting apinfra.service --no-block (update runs in background)"
+  user_systemctl start --no-block apinfra.service || true
+
+  accuracy="$(user_systemctl show apinfra.timer -p AccuracyUSec --value 2>/dev/null || true)"
+  if [ -n "${accuracy}" ]; then
+    echo "apinfra: apinfra.timer AccuracyUSec=${accuracy}"
+  fi
+}
+
+case "$1" in
+  configure)
+    install_config_file
+    install_env_file
+
+    if [ -f "${BIN_PATH}" ]; then
+      chown "${APINFRA_USER}:${APINFRA_USER}" "${BIN_PATH}"
+      chmod 0755 "${BIN_PATH}"
+    fi
+
+    ensure_docker_group_and_refresh_user
+    reload_user_units
+
+    echo "apinfra: edit ${CONFIG_DST} (repo, tokens); ${ENV_DST} (app secrets); cert settings live in config-repo settings.yml; timer runs: ${BIN_PATH} update infra"
+    echo "apinfra: timer status: systemctl --user -M ${APINFRA_USER}@ status apinfra.timer"
+    ;;
+esac
+
+exit 0

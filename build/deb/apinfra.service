@@ -1,0 +1,15 @@
+[Unit]
+Description=apinfra GitOps update
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+# Soft-fails (exit 0) on missing repo / git / processor errors so the timer stays healthy.
+# Kill a hung oneshot so the timer can start the next cycle (must exceed longest .apinfra timeout).
+TimeoutStartSec=45min
+ExecStart=%h/apinfra
+Nice=10
+
+[Install]
+WantedBy=default.target

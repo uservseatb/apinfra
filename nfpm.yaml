@@ -1,0 +1,50 @@
+name: apinfra
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+maintainer: apinfra maintainers <maintainers@example.com>
+description: |
+  GitOps agent for Docker Compose, Nginx and Let's Encrypt (lego).
+  Syncs a config repository, manages Docker Compose services,
+  Nginx reverse proxy routing, and Let's Encrypt certificates.
+vendor: apinfra
+homepage: https://github.com/uservseatb/apinfra
+license: MIT
+
+depends:
+  - docker.io | docker-ce
+  - docker-compose-v2 | docker-compose-plugin
+contents:
+  - src: bin/apinfra
+    dst: /home/ap/apinfra
+    file_info:
+      mode: 0755
+      owner: ap
+      group: ap
+
+  - src: build/deb/apinfra.service
+    dst: /usr/lib/systemd/user/apinfra.service
+    file_info:
+      mode: 0644
+
+  - src: build/deb/apinfra.timer
+    dst: /usr/lib/systemd/user/apinfra.timer
+    file_info:
+      mode: 0644
+
+  - src: build/deb/apinfra.example
+    dst: /usr/share/apinfra/apinfra.example
+    file_info:
+      mode: 0644
+
+  - src: build/deb/env.example
+    dst: /usr/share/apinfra/env.example
+    file_info:
+      mode: 0644
+
+scripts:
+  preinstall: build/deb/preinst
+  postinstall: build/deb/postinst
+  postremove: build/deb/postrm
