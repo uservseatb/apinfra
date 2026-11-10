@@ -45,6 +45,12 @@ type ApplyTimeouts struct {
 	API         time.Duration
 }
 
+// Config holds construction-time settings for Service.
+type Config struct {
+	Timeouts          ApplyTimeouts
+	TrustedImagesPath string
+}
+
 // ApplyResult is the outcome of Apply for the deployment orchestrator / nginx.
 // ProxyRunning/ProxyReady come from the same ContainerList used for start planning
 // (or from a successful proxy up in this cycle) — no extra Docker API list.

@@ -113,6 +113,12 @@ type dockerEnv struct {
 func newDockerEnv(t *testing.T) *dockerEnv {
 	t.Helper()
 
+	return newDockerEnvWithTrusted(t, "")
+}
+
+func newDockerEnvWithTrusted(t *testing.T, trustedImagesPath string) *dockerEnv {
+	t.Helper()
+
 	infra := filepath.Join(t.TempDir(), "infra")
 	cli := newFakeCLI()
 	lister := &fakeLister{}
@@ -123,8 +129,28 @@ func newDockerEnv(t *testing.T) *dockerEnv {
 		cli:    cli,
 		lister: lister,
 		events: evs,
-		svc:    docker.NewService(infrastructure.NewStackFS(infra), cli, lister, evs, docker.ApplyTimeouts{}),
+		svc: docker.NewService(
+			infrastructure.NewStackFS(infra),
+			cli,
+			lister,
+			evs,
+			docker.Config{TrustedImagesPath: trustedImagesPath},
+		),
 	}
+}
+
+func writeTrustedImages(t *testing.T, lines ...string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), ".trusted_images")
+	content := strings.Join(lines, "\n") + "\n"
+
+	err := os.WriteFile(path, []byte(content), 0o600)
+	if err != nil {
+		t.Fatalf("write trusted images: %v", err)
+	}
+
+	return path
 }
 
 func (e *dockerEnv) apply(
@@ -809,6 +835,195 @@ func TestValidateProjects_AggregatesAllFailures(t *testing.T) {
 
 	if strings.Contains(err.Error(), "project=ok") {
 		t.Fatalf("valid project must not be reported: %v", err)
+	}
+}
+
+func TestValidateProjects_RejectsHostBindMounts(t *testing.T) {
+	t.Parallel()
+
+	const trustedDigest = "amir20/dozzle@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	tests := []struct {
+		name       string
+		compose    string
+		allowlist  []string
+		wantErr    string
+		wantKind   string
+		wantReason string
+	}{
+		{
+			name:       "host_root_bind",
+			compose:    "services:\n  web:\n    image: nginx\n    volumes:\n      - /:/host\n",
+			wantErr:    "volume policy violation",
+			wantKind:   "security_violation",
+			wantReason: "disallowed_bind_mount",
+		},
+		{
+			name:       "untrusted_docker_sock",
+			compose:    "services:\n  web:\n    image: amir20/dozzle:latest\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
+			wantErr:    "volume policy violation",
+			wantKind:   "security_violation",
+			wantReason: "untrusted_docker_socket_mount",
+		},
+		{
+			name:       "tmpfs_forbidden",
+			compose:    "services:\n  web:\n    image: nginx\n    volumes:\n      - type: tmpfs\n        target: /tmp\n",
+			wantErr:    "volume policy violation",
+			wantKind:   "security_violation",
+			wantReason: "disallowed_volume_type",
+		},
+		{
+			name:      "trusted_docker_sock",
+			compose:   "services:\n  web:\n    image: " + trustedDigest + "\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
+			allowlist: []string{trustedDigest},
+		},
+		{
+			name:    "named_volume_ok",
+			compose: "services:\n  web:\n    image: nginx\n    volumes:\n      - data:/data\nvolumes:\n  data:\n",
+		},
+	}
+
+	for _, tcase := range tests {
+		t.Run(tcase.name, func(t *testing.T) {
+			t.Parallel()
+
+			trustedPath := ""
+			if len(tcase.allowlist) > 0 {
+				trustedPath = writeTrustedImages(t, tcase.allowlist...)
+			}
+
+			env := newDockerEnvWithTrusted(t, trustedPath)
+			project := shopProject(tcase.compose)
+			project.EntryPoint = ""
+
+			err := env.svc.ValidateProjects(context.Background(), []docker.Project{project}, nil)
+			if tcase.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected err: %v", err)
+				}
+
+				return
+			}
+
+			if err == nil || !strings.Contains(err.Error(), tcase.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tcase.wantErr)
+			}
+
+			if len(env.events.got) != 1 || env.events.got[0].kind != tcase.wantKind {
+				t.Fatalf("events = %+v, want kind %q", env.events.got, tcase.wantKind)
+			}
+
+			if env.events.got[0].fields["reason"] != tcase.wantReason {
+				t.Fatalf("reason = %q, want %q", env.events.got[0].fields["reason"], tcase.wantReason)
+			}
+		})
+	}
+}
+
+func TestApply_TrustedImageDeployedEvent(t *testing.T) {
+	t.Parallel()
+
+	const trustedDigest = "amir20/dozzle@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	trustedPath := writeTrustedImages(t, trustedDigest)
+	env := newDockerEnvWithTrusted(t, trustedPath)
+
+	project := docker.Project{
+		Name:        "dozzle",
+		ComposeYAML: "services:\n  dozzle:\n    image: " + trustedDigest + "\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
+	}
+
+	_, err := env.applyAll(t, project)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	if !hasCall(env.cli.calls, "up-app:dozzle") {
+		t.Fatalf("expected up-app:dozzle in %v", env.cli.calls)
+	}
+
+	var found bool
+
+	for _, event := range env.events.got {
+		if event.kind != "trusted_image_deployed" {
+			continue
+		}
+
+		found = true
+
+		if event.fields["project"] != "dozzle" ||
+			event.fields["service"] != "dozzle" ||
+			event.fields["image"] != trustedDigest ||
+			event.fields["digest"] != "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+			t.Fatalf("unexpected event fields: %+v", event.fields)
+		}
+	}
+
+	if !found {
+		t.Fatalf("missing trusted_image_deployed in %+v", env.events.got)
+	}
+}
+
+func TestApply_RejectsBindMountBeforeUp(t *testing.T) {
+	t.Parallel()
+
+	env := newDockerEnv(t)
+	project := shopProject("services:\n  web:\n    image: nginx\n    volumes:\n      - /root:/root\n")
+	project.EntryPoint = ""
+
+	_, err := env.apply(t, []docker.Project{project}, nil, nil, true)
+	if err == nil || !strings.Contains(err.Error(), "volume policy violation") {
+		t.Fatalf("err = %v, want volume policy violation", err)
+	}
+
+	if hasCall(env.cli.calls, "up-app:"+projShop) || hasCall(env.cli.calls, "pull-app:"+projShop) {
+		t.Fatalf("compose up must not run on security violation: %v", env.cli.calls)
+	}
+
+	if len(env.events.got) == 0 || env.events.got[0].kind != "security_violation" {
+		t.Fatalf("events = %+v, want security_violation", env.events.got)
+	}
+}
+
+func TestApply_RejectsTmpfsBeforeUp(t *testing.T) {
+	t.Parallel()
+
+	env := newDockerEnv(t)
+	project := shopProject("services:\n  web:\n    image: nginx\n    volumes:\n      - type: tmpfs\n        target: /tmp\n")
+	project.EntryPoint = ""
+
+	_, err := env.apply(t, []docker.Project{project}, nil, nil, true)
+	if err == nil || !strings.Contains(err.Error(), "volume policy violation") {
+		t.Fatalf("err = %v, want volume policy violation", err)
+	}
+
+	if hasCall(env.cli.calls, "up-app:"+projShop) || hasCall(env.cli.calls, "pull-app:"+projShop) {
+		t.Fatalf("compose up must not run on tmpfs violation: %v", env.cli.calls)
+	}
+
+	if len(env.events.got) != 1 ||
+		env.events.got[0].kind != "security_violation" ||
+		env.events.got[0].fields["reason"] != "disallowed_volume_type" {
+		t.Fatalf("events = %+v, want security_violation/disallowed_volume_type", env.events.got)
+	}
+}
+
+func TestValidateProjects_RejectsTmpfs(t *testing.T) {
+	t.Parallel()
+
+	env := newDockerEnv(t)
+	project := shopProject("services:\n  web:\n    image: nginx\n    volumes:\n      - type: tmpfs\n        target: /tmp\n")
+	project.EntryPoint = ""
+
+	err := env.svc.ValidateProjects(context.Background(), []docker.Project{project}, nil)
+	if err == nil || !strings.Contains(err.Error(), "volume policy violation") {
+		t.Fatalf("err = %v, want volume policy violation", err)
+	}
+
+	if len(env.events.got) != 1 ||
+		env.events.got[0].kind != "security_violation" ||
+		env.events.got[0].fields["reason"] != "disallowed_volume_type" {
+		t.Fatalf("events = %+v, want security_violation/disallowed_volume_type", env.events.got)
 	}
 }
 

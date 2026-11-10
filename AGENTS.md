@@ -82,7 +82,7 @@ Do not commit binaries, coverage artifacts, or `vendor/` unless explicitly reque
 - Keep functions small; prefer early returns over deep nesting.
 - Pass `context.Context` as the first parameter for I/O, RPC, and long-running work.
 - Avoid global mutable state; wire dependencies explicitly (constructors / `New...`).
-- Do not add comments that restate the code; comment non-obvious intent and exported APIs when helpful.
+- Do not add comments that restate the code. Prefer short comments **above methods/types** only. Inline comments are rare — only for genuinely non-obvious / hard-to-read intent (security traps, loader quirks, etc.). Never narrate what the next few lines do.
 - Match existing style once code exists; until then, follow Effective Go and the standard library.
 - **Multi-way branches → `switch`**: An `if` / `else` with only two outcomes is fine. When a decision has **more than two branches** (`if` / `else if` / `else`, or mutually exclusive early returns / type assertions that encode 3+ alternatives for the same value), use `switch` / `switch {` / type-`switch` instead of an if-ladder. Independent sequential guards (`if err != nil`, then `if x == nil`) stay as separate `if`s.
 - **goconst / no magic strings**: Repeated string literals are a must-have `const` in **production code first**, not only in tests. If the same string appears 3+ times in a package (or is a domain/config/protocol value reused across call sites), extract a named `const` near related code. Tests should reuse those package consts when the value is shared with production logic; keep test-only fixtures in `*_test.go` (e.g. `testconst_test.go`). Never leave duplicated magic strings just because “it’s only a test” or “it’s only used twice more later.” Run `task lint` / `golangci-lint run ./...` before considering work done.
@@ -98,7 +98,7 @@ Do not commit binaries, coverage artifacts, or `vendor/` unless explicitly reque
 ### Security & secrets
 
 - Never commit secrets, tokens, or real `.env` / `.apinfra` values.
-- Keep host templates in `build/deb/apinfra.example` and `build/deb/env.example` only (packaged into the .deb).
+- Keep host templates in `build/deb/apinfra.example`, `build/deb/env.example`, and `build/deb/trusted_images.example` only (packaged into the .deb).
 - Validate untrusted input at trust boundaries.
 
 ## Agent behavior
@@ -125,5 +125,6 @@ This project (apinfra) interacts heavily with the OS, Network, Git, and Docker A
 
 #### 3. Execution & Structure
 * **Test file ↔ source file:** Tests for symbols defined in `foo.go` must live in `foo_test.go`. Do not put tests for `foo.go` into an unrelated `bar_test.go`. Extra files named `foo_<facet>_test.go` are allowed only when they still test only `foo.go`. When moving production code between files, move the matching tests with it.
+* **External test packages only:** Use `package foo_test` (not `package foo`). **Never** silence this with `//nolint:testpackage`. Test through the public API; do not reach for unexported symbols via a same-package test.
 * **Golden Files:** Use snapshot testing (`testdata/` pattern) to compare complex CLI outputs or generated Nginx configs against verified historical snapshots rather than hardcoding long strings in Go code.
 * Race detector (`-race`) for concurrent code before considering it done.

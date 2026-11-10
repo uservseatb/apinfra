@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/uservseatb/apinfra/internal/assets"
@@ -37,27 +40,41 @@ var (
 
 // Service orchestrates proxy and per-project docker compose stacks.
 type Service struct {
-	fs       StackFileSystem
-	cli      CLIExecutor
-	lister   ContainerLister
-	events   EventRecorder
-	timeouts ApplyTimeouts
+	fs                StackFileSystem
+	cli               CLIExecutor
+	lister            ContainerLister
+	events            EventRecorder
+	timeouts          ApplyTimeouts
+	trustedImagesPath string
+	trustedSocks      map[string][]trustedSockRef
+	trustedOnce       sync.Once
+	trustedSet        map[string]struct{}
 }
 
 // NewService builds a docker domain Service. events may be nil.
+// Empty cfg.TrustedImagesPath defaults to $HOME/.trusted_images.
 func NewService(
 	stackFS StackFileSystem,
 	cli CLIExecutor,
 	lister ContainerLister,
 	events EventRecorder,
-	timeouts ApplyTimeouts,
+	cfg Config,
 ) *Service {
-	return &Service{
-		fs:       stackFS,
-		cli:      cli,
-		lister:   lister,
-		events:   events,
-		timeouts: timeouts.withDefaults(),
+	trustedPath := strings.TrimSpace(cfg.TrustedImagesPath)
+	if trustedPath == "" {
+		home := strings.TrimSpace(os.Getenv("HOME"))
+		if home != "" {
+			trustedPath = filepath.Join(home, trustedImagesFileName)
+		}
+	}
+
+	return &Service{ //nolint:exhaustruct_v5 // trustedSocks/trustedSet filled lazily per cycle
+		fs:                stackFS,
+		cli:               cli,
+		lister:            lister,
+		events:            events,
+		timeouts:          cfg.Timeouts.withDefaults(),
+		trustedImagesPath: trustedPath,
 	}
 }
 
@@ -541,6 +558,12 @@ func (s *Service) startApps(ctx context.Context, appsToStart []string) (bool, er
 			log.Printf("[docker] WARN start project=%s: %v (continuing with remaining stacks)", name, err)
 
 			errs = append(errs, err)
+
+			continue
+		}
+
+		if upAttempted {
+			s.emitTrustedImageDeployed(name)
 		}
 	}
 
@@ -580,7 +603,7 @@ func (s *Service) writeAppStack(
 	project *Project,
 	hostEnv map[string]string,
 ) (bool, map[string]struct{}, error) {
-	composeProject, sidecar, err := prepareProjectCompose(ctx, project, hostEnv)
+	composeProject, sidecar, err := s.prepareProjectCompose(ctx, project, hostEnv)
 	if err != nil {
 		return false, nil, err
 	}
@@ -613,7 +636,7 @@ func composeServiceNameSet(composeProject *types.Project) map[string]struct{} {
 	return out
 }
 
-func prepareProjectCompose(
+func (s *Service) prepareProjectCompose(
 	ctx context.Context,
 	project *Project,
 	hostEnv map[string]string,
@@ -641,6 +664,13 @@ func prepareProjectCompose(
 	if err != nil {
 		return nil, nil, err
 	}
+
+	err = s.validateProjectVolumes(project.Name, composeProject)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	s.rememberTrustedSocks(project.Name, composeProject)
 
 	stripNetworkMode(composeProject, project.Name)
 	ensureProjectNetwork(composeProject, project.Name)
@@ -837,6 +867,13 @@ func (s *Service) validateOneProjectCompose(ctx context.Context, project Project
 	if err != nil {
 		return err
 	}
+
+	err = s.validateProjectVolumes(project.Name, composeProject)
+	if err != nil {
+		return err
+	}
+
+	s.rememberTrustedSocks(project.Name, composeProject)
 
 	log.Printf("[compose-validate] ok project=%s", project.Name)
 

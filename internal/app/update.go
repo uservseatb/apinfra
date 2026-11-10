@@ -98,13 +98,15 @@ func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
 		cliRunner,
 		cliRunner,
 		dockerEvents,
-		docker.ApplyTimeouts{
-			Login:       cfg.DockerLoginTimeout,
-			ComposePull: cfg.DockerComposePullTimeout,
-			ComposeUp:   cfg.DockerComposeUpTimeout,
-			ComposeDown: cfg.DockerComposeDownTimeout,
-			Prune:       cfg.DockerPruneTimeout,
-			API:         cfg.DockerAPITimeout,
+		docker.Config{ //nolint:exhaustruct_v5 // TrustedImagesPath empty → NewService default $HOME/.trusted_images
+			Timeouts: docker.ApplyTimeouts{
+				Login:       cfg.DockerLoginTimeout,
+				ComposePull: cfg.DockerComposePullTimeout,
+				ComposeUp:   cfg.DockerComposeUpTimeout,
+				ComposeDown: cfg.DockerComposeDownTimeout,
+				Prune:       cfg.DockerPruneTimeout,
+				API:         cfg.DockerAPITimeout,
+			},
 		},
 	)
 

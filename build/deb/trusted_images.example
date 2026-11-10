@@ -1,0 +1,6 @@
+# Host allowlist of images permitted to bind-mount /var/run/docker.sock.
+# Installed as ~/.trusted_images by the package postinst when missing (chmod 600).
+# Every entry MUST be digest-pinned (name@sha256:…). Tag-only refs are ignored / rejected.
+#
+# Example: Vector (data logging / docker log collection) with a pinned digest:
+# timberio/vector@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

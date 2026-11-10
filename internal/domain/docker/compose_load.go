@@ -10,23 +10,22 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 )
 
-var errNilComposeProject = errors.New("nil compose project")
+var errEmptyComposeProject = errors.New("empty compose project name")
 
 const composeFilename = "docker-compose.yml"
 
-// loadMode selects loader options for validation vs mutate-and-write.
 type loadMode int
 
 const (
-	// loadValidate runs schema + consistency checks with env interpolation.
 	loadValidate loadMode = iota
-	// loadMutate loads a typed model for in-memory edits. Skips normalization so
-	// marshal does not invent a default network or rewrite network names.
+	// loadMutate skips normalization so marshal does not invent a default network
+	// or rewrite network names.
 	loadMutate
 )
 
 // loadCompose parses compose YAML via compose-go into a typed project.
 // env is used only for interpolation (no OS env). ResolvePaths is always off.
+// SkipInclude/SkipExtends block host-FS composition (WorkingDir would be process cwd).
 func loadCompose(
 	ctx context.Context,
 	raw, projectName string,
@@ -39,7 +38,7 @@ func loadCompose(
 
 	name := loader.NormalizeProjectName(projectName)
 	if name == "" {
-		name = "project"
+		return nil, fmt.Errorf("%w: %q", errEmptyComposeProject, projectName)
 	}
 
 	environment := types.Mapping{}
@@ -60,8 +59,6 @@ func loadCompose(
 	project, err := loader.LoadWithContext(ctx, details, func(opts *loader.Options) {
 		opts.SetProjectName(name, true)
 		opts.ResolvePaths = false
-		// Config YAML arrives from git as a single blob; never pull sibling
-		// host files via include/extends (WorkingDir would be process cwd).
 		opts.SkipInclude = true
 		opts.SkipExtends = true
 
@@ -81,7 +78,7 @@ func loadCompose(
 // Clears the project name so `docker compose -p` owns naming without a file-level name:.
 func marshalCompose(project *types.Project) (string, error) {
 	if project == nil {
-		return "", errNilComposeProject
+		return "", errEmptyComposeProject
 	}
 
 	saved := project.Name

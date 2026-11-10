@@ -1,5 +1,5 @@
 #!/bin/sh
-# postinst: .apinfra + .env, docker group, user systemd timer for `ap`.
+# postinst: .apinfra + .env + .trusted_images, docker group, user systemd timer for `ap`.
 # Docker Engine is a Depends (docker.io | docker-ce); apt should configure it
 # first. User is created in preinst; group docker is still created if missing.
 set -e
@@ -10,6 +10,8 @@ CONFIG_EXAMPLE="/usr/share/apinfra/apinfra.example"
 CONFIG_DST="${APINFRA_HOME}/.apinfra"
 ENV_EXAMPLE="/usr/share/apinfra/env.example"
 ENV_DST="${APINFRA_HOME}/.env"
+TRUSTED_IMAGES_EXAMPLE="/usr/share/apinfra/trusted_images.example"
+TRUSTED_IMAGES_DST="${APINFRA_HOME}/.trusted_images"
 BIN_PATH="${APINFRA_HOME}/apinfra"
 
 secure_file() {
@@ -55,6 +57,23 @@ install_env_file() {
   cp "${ENV_EXAMPLE}" "${ENV_DST}"
   # Owner-only read/write: secrets must not be group/world-readable.
   secure_file "${ENV_DST}"
+}
+
+install_trusted_images_file() {
+  if [ -f "${TRUSTED_IMAGES_DST}" ]; then
+    echo "apinfra: keeping existing ${TRUSTED_IMAGES_DST}"
+    secure_file "${TRUSTED_IMAGES_DST}"
+    return
+  fi
+
+  if [ ! -f "${TRUSTED_IMAGES_EXAMPLE}" ]; then
+    echo "apinfra: WARN ${TRUSTED_IMAGES_EXAMPLE} missing; create ${TRUSTED_IMAGES_DST} manually"
+    return
+  fi
+
+  echo "apinfra: installing ${TRUSTED_IMAGES_DST} from trusted_images.example"
+  cp "${TRUSTED_IMAGES_EXAMPLE}" "${TRUSTED_IMAGES_DST}"
+  secure_file "${TRUSTED_IMAGES_DST}"
 }
 
 # Ensure group docker exists, add ap, restart user@ so linger/timer get SUPGID=docker.
@@ -179,6 +198,7 @@ case "$1" in
   configure)
     install_config_file
     install_env_file
+    install_trusted_images_file
 
     if [ -f "${BIN_PATH}" ]; then
       chown "${APINFRA_USER}:${APINFRA_USER}" "${BIN_PATH}"
@@ -188,7 +208,7 @@ case "$1" in
     ensure_docker_group_and_refresh_user
     reload_user_units
 
-    echo "apinfra: edit ${CONFIG_DST} (repo, tokens); ${ENV_DST} (app secrets); cert settings live in config-repo settings.yml; timer runs: ${BIN_PATH} update infra"
+    echo "apinfra: edit ${CONFIG_DST} (repo, tokens); ${ENV_DST} (app secrets); ${TRUSTED_IMAGES_DST} (docker.sock allowlist); cert settings live in config-repo settings.yml; timer runs: ${BIN_PATH} update infra"
     echo "apinfra: timer status: systemctl --user -M ${APINFRA_USER}@ status apinfra.timer"
     ;;
 esac
