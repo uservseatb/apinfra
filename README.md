@@ -96,6 +96,7 @@ The package sets up the following on the server:
     * `/home/ap/apinfra` — Agent binary.
     * `/home/ap/.apinfra` — Host agent settings (repo, registry, …).
     * `/home/ap/.env` — Host application environment variables (secrets / project-prefixed keys).
+    * `/home/ap/.trusted_images` — Allowlist for digest-pinned images with Docker socket access (see [Format](#trusted-images-trusted_images)).
     * `/home/ap/infra/` — Runtime directory for Nginx, Compose files, and certificates.
 
 ### Verifying the Installation
@@ -369,6 +370,7 @@ Drop `-f` to print recent logs without following, or add `-n 200` to limit the o
 * **Host-Network Control:** Any use of custom `network_mode` in the application's `docker-compose.yml` is forcibly removed before start. This option is fully blocked for security — all projects must stay on isolated bridge networks.
 * **Privilege Escalation Protection:** Every container is started with `no-new-privileges: true`. This forbids processes inside the container from gaining new privileges after startup (e.g. via setuid/setgid binaries). Even if the application inside the container initializes as root, this layer protects the host from runtime exploits and container-escape attempts. The agent explicitly forces `privileged: false` and strips any privileged flags or dangerous capabilities to isolate containers.
 * **Compose Include/Extends Guard:** `include` and `extends` are blocked to prevent host filesystem attacks via compose file composition.
+* **Strict Volume & Socket Control:** Only Docker named volumes are allowed (e.g. database data). Host path binds are blocked, except `/var/run/docker.sock` for images listed in `~/.trusted_images`. A violation writes a `security_violation` event and aborts the cycle before `compose up`.
 
 ### Project `.env` and Variable Normalization
 Each project folder may include an optional `.env` next to its `docker-compose.yml`. In that file you can use a dot-separated "Java-style" notation. Before evaluating the variables, the agent **normalizes** them: it replaces dots with underscores and converts strings to uppercase.
@@ -591,6 +593,8 @@ Operational events are appended as JSON Lines to `~/.events` (for user `ap`: `/h
 | :--- | :--- | :--- | :--- |
 | `git_login_failed` | Config-repo clone fails due to authentication or authorization problems. | `repo` — clone URL of the repository. | The **entire update cycle is aborted immediately.** Docker and Nginx on the host remain unchanged. |
 | `docker_login_failed` | All three fields (`containerRegistryHost`, `containerRegistryUser`, `containerRegistryToken`) are set in `.apinfra`, this cycle needs `compose pull` or `up`, but `docker login` fails. | `registry` — private registry host. | New `docker-compose.yml` files for this cycle may already be written to disk, but `pull`, `up`, and `down` stop completely. **Nginx config generation and image prune are skipped.** If registry credentials are not set, the login step is silently skipped, no event is written, and the deploy cycle continues. |
+| `security_violation` | A project compose declares a forbidden mount (anything except a Docker named volume), or mounts `/var/run/docker.sock` with an image that is not listed in `~/.trusted_images`. | `project`, `service`, `source`, `reason` (`disallowed_bind_mount`, `disallowed_volume_type`, or `untrusted_docker_socket_mount`); optional `image`. | The **entire update cycle is aborted** before `Apply` / `compose up`. Host stacks stay unchanged. The same details are written to the agent log. |
+| `trusted_image_deployed` | A trusted, digest-pinned image with `/var/run/docker.sock` access was successfully deployed in an app stack. | `project`, `service`, `image` (full `name@sha256:…`), `digest`. | Informational audit only; deploy continues. Also logged as `[docker] trusted image deployed …`. |
 | `cert_rate_limited` | ACME rate limit / HTTP 429 after both CAs fail at the current mode (or only one CA is configured). | `domain`, `from`, `to` — mode before and after downgrade. | `.downgradeCertMode` is set to the next lower mode for `certs.downgradeCertModeHours` (`prod` → `test` → `mock` → `none`). If the mode reaches `none`, Nginx switches to plain HTTP and skips ACME for that domain until the downgrade TTL expires. All other domains continue normally. |
 | `cert_issue_failed` | `certs.triesCount` is exhausted due to ordinary non–rate-limit issuance errors (one increment per agent run). | `domain`, `attempts`, `mode`, `blocked_until`. | In `.retries` the domain is marked `blocked: true` until `blocked_until` (`now` + `certs.blockHours`). While blocked, further certificate issue attempts for that domain are skipped. All other domains continue unchanged. |
 
@@ -614,6 +618,14 @@ Optional keys in `/home/ap/.apinfra` for logging verbosity and operation timeout
 </tr>
 </tbody>
 </table>
+
+### Trusted images (`~/.trusted_images`)
+
+Contains digest-pinned images allowed to bind-mount `/var/run/docker.sock`.
+
+* One image reference per line: `name@sha256:<hex>` (optional `#` comments and blank lines).
+* Matching is exact and case-insensitive on the full string. Tag-only images never qualify.
+* If the file is missing, no image is trusted for the socket exception (projects without a docker.sock bind are unaffected).
 
 ### Timeouts
 
