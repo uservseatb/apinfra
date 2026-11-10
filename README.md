@@ -1,5 +1,9 @@
 # apinfra
 
+[![Go Version](https://img.shields.io/github/go-mod/go-version/uservseatb/apinfra)](https://github.com/uservseatb/apinfra/blob/main/go.mod)
+[![Latest Release](https://img.shields.io/github/v/release/uservseatb/apinfra)](https://github.com/uservseatb/apinfra/releases/latest)
+[![License](https://img.shields.io/github/license/uservseatb/apinfra)](LICENSE)
+
 **apinfra** is a lightweight GitOps agent that deploys **docker-compose** apps on a **single host**, with automatic **Nginx** reverse-proxy routing and **Let's Encrypt** / **ZeroSSL** certificates.
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
