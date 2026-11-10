@@ -3,6 +3,11 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/uservseatb/apinfra)](https://github.com/uservseatb/apinfra/blob/main/go.mod)
 [![Latest Release](https://img.shields.io/github/v/release/uservseatb/apinfra)](https://github.com/uservseatb/apinfra/releases/latest)
 [![License](https://img.shields.io/github/license/uservseatb/apinfra)](LICENSE)
+![GitOps](https://img.shields.io/badge/GitOps-%F0%9F%94%80-blue)
+![Docker](https://img.shields.io/badge/Docker-%F0%9F%90%B3-blue)
+![Nginx](https://img.shields.io/badge/Nginx-%F0%9F%9F%A9-green)
+![Let's Encrypt](https://img.shields.io/badge/Let's%20Encrypt-%F0%9F%94%92-brightgreen)
+![ZeroSSL](https://img.shields.io/badge/ZeroSSL-%F0%9F%94%92-blue)
 
 **apinfra** is a lightweight GitOps agent that deploys **docker-compose** apps on a **single host**, with automatic **Nginx** reverse-proxy routing and **Let's Encrypt** / **ZeroSSL** certificates.
 
