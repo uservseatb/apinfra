@@ -29,6 +29,12 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 * **Port / host-network exposure guard:** By default, all `ports` mappings and any `network_mode: host` in docker-compose are stripped, so containers are not accidentally published on the host network stack; public access goes only through the managed Nginx routes. When needed, you can still configure port forwarding bound to a specific IP (`allow-ports-mapping: true`).
 * **Lightweight & Fast:** Built with Go — minimal overhead, low memory footprint, and fast execution.
 
+## 🧪 Testing & Stability
+
+Every core mechanic — including configuration validation, Nginx config rollbacks, and ACME certificate downgrades — is covered by comprehensive end-to-end tests.
+Our testing suite runs inside an isolated Linux container to prevent host port collisions (`:80`/`:443`) and uses the official Let's Encrypt **Pebble** CA stub to simulate real-world production ACME failures, rate limits, and DNS preflights.
+👉 Check out the test scenarios and architecture here: **[apinfra-e2e](https://github.com/uservseatb/apinfra-e2e)**
+
 ## How It Works
 
 ![How apinfra works](docs/how-it-works.svg)
