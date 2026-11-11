@@ -40,8 +40,10 @@ var (
 )
 
 type fakeProxy struct {
-	testErr error
-	reloads int
+	testErr         error
+	reloadErr       error
+	failReloadsLeft int
+	reloads         int
 }
 
 func (p *fakeProxy) TestConfiguration(context.Context, time.Duration) error { return p.testErr }
@@ -49,7 +51,13 @@ func (p *fakeProxy) TestConfiguration(context.Context, time.Duration) error { re
 func (p *fakeProxy) Reload(context.Context, time.Duration) error {
 	p.reloads++
 
-	return nil
+	if p.failReloadsLeft > 0 {
+		p.failReloadsLeft--
+
+		return errTestBoom
+	}
+
+	return p.reloadErr
 }
 
 type fakeDNS struct {
@@ -1027,5 +1035,116 @@ func TestProcessRouting_OneDomainFailureDoesNotAffectOthers(t *testing.T) {
 
 	if env.installed(t)[domainOld] != "prod" {
 		t.Fatalf("recovered domain must be installed: %v", env.installed(t))
+	}
+}
+
+func TestProcessRouting_ReloadPendingRetriesAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	env := newRouteEnv(t)
+	fs := infrastructure.NewVhostFS(env.infra)
+
+	proj := portProject("none")
+	proj.EntryPointPort = "80"
+
+	err := env.runLive(proj)
+	if err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+
+	pending, err := fs.HasReloadPending()
+	if err != nil || pending {
+		t.Fatalf("after success HasReloadPending = %v, %v", pending, err)
+	}
+
+	proj.EntryPointPort = "8080"
+	env.proxy.failReloadsLeft = 1
+
+	err = env.runLive(proj)
+	if err == nil {
+		t.Fatal("cycle 2: want reload failure")
+	}
+
+	pending, err = fs.HasReloadPending()
+	if err != nil || !pending {
+		t.Fatalf("after failed reload HasReloadPending = %v, %v", pending, err)
+	}
+
+	conf, ok := env.conf(t, "dev_api.conf")
+	if !ok {
+		t.Fatal("conf missing after failed reload")
+	}
+
+	assertContains(t, conf, `proxy_pass "http://api.apinfra_api:8080"`)
+
+	reloadsBefore := env.proxy.reloads
+
+	err = env.runLive(proj)
+	if err != nil {
+		t.Fatalf("cycle 3 (unchanged): %v", err)
+	}
+
+	if env.proxy.reloads != reloadsBefore+1 {
+		t.Fatalf("unchanged cycle must retry reload: %d -> %d", reloadsBefore, env.proxy.reloads)
+	}
+
+	pending, err = fs.HasReloadPending()
+	if err != nil || pending {
+		t.Fatalf("after successful retry HasReloadPending = %v, %v", pending, err)
+	}
+
+	reloadsIdle := env.proxy.reloads
+
+	err = env.runLive(proj)
+	if err != nil {
+		t.Fatalf("cycle 4: %v", err)
+	}
+
+	if env.proxy.reloads != reloadsIdle {
+		t.Fatalf("healthy unchanged cycle must not reload: %d -> %d", reloadsIdle, env.proxy.reloads)
+	}
+}
+
+func TestProcessRouting_EnsureHostFilesPendingTriggersReload(t *testing.T) {
+	t.Parallel()
+
+	env := newRouteEnv(t)
+	fs := infrastructure.NewVhostFS(env.infra)
+
+	err := env.runLive(portProject("none"))
+	if err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+
+	reloadsBefore := env.proxy.reloads
+
+	nginxConf := filepath.Join(env.infra, "nginx", "nginx.conf")
+	err = os.WriteFile(nginxConf, []byte("# stale asset\n"), 0o644)
+	if err != nil {
+		t.Fatalf("seed stale nginx.conf: %v", err)
+	}
+
+	err = fs.EnsureHostFiles()
+	if err != nil {
+		t.Fatalf("EnsureHostFiles: %v", err)
+	}
+
+	pending, err := fs.HasReloadPending()
+	if err != nil || !pending {
+		t.Fatalf("asset change must mark pending: has=%v err=%v", pending, err)
+	}
+
+	err = env.runLive(portProject("none"))
+	if err != nil {
+		t.Fatalf("ProcessRouting after asset change: %v", err)
+	}
+
+	if env.proxy.reloads != reloadsBefore+1 {
+		t.Fatalf("pending asset change must reload: %d -> %d", reloadsBefore, env.proxy.reloads)
+	}
+
+	pending, err = fs.HasReloadPending()
+	if err != nil || pending {
+		t.Fatalf("after reload HasReloadPending = %v, %v", pending, err)
 	}
 }

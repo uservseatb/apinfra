@@ -16,6 +16,9 @@ type IngressFileSystem interface {
 	RemoveStaleConfigs(keepFileNames map[string]struct{}, validate func() error) (removed bool, err error)
 	SnapshotConfigs(identityToFileName map[string]string) map[string]ConfigSnapshot
 	RestoreConfigSnapshots(snapshots map[string]ConfigSnapshot, identities []string) (restored bool)
+	MarkReloadPending() error
+	HasReloadPending() (bool, error)
+	ClearReloadPending() error
 	CertFilesPresent(domain, mode string) bool
 	StashCertDir(domain, mode string) (finish func(issued bool))
 	RemoveCertMaterial(domain string)

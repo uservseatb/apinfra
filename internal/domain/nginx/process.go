@@ -116,22 +116,7 @@ func (s *RoutingService) finishNginxWithoutCerts(
 		return nil
 	}
 
-	if isMainUpdated || anyConfChanged || certsChanged || forceReload {
-		err := s.nginxReload(ctx)
-		if err != nil {
-			if errors.Is(err, ErrProxyNotReady) {
-				log.Printf("[nginx] done (configs only; waiting for %s)", proxyContainerName)
-
-				return nil
-			}
-
-			return err
-		}
-	}
-
-	log.Printf("[nginx] done (configs only)")
-
-	return nil
+	return s.reloadNginxIfNeeded(ctx, isMainUpdated, anyConfChanged, certsChanged, forceReload)
 }
 
 func (s *RoutingService) finishNginxWithCerts(
@@ -190,24 +175,32 @@ func (s *RoutingService) reloadNginxIfNeeded(
 	ctx context.Context,
 	isMainUpdated, anyConfChanged, certsChanged, forceReload bool,
 ) error {
-	if isMainUpdated || anyConfChanged || certsChanged || forceReload {
-		log.Printf(
-			"[nginx] reloading %s (mainUpdated=%v confChanged=%v certsChanged=%v forceReload=%v)",
-			proxyContainerName, isMainUpdated, anyConfChanged, certsChanged, forceReload,
-		)
+	pending, err := s.fs.HasReloadPending()
+	if err != nil {
+		return fmt.Errorf("reload pending: %w", err)
+	}
 
-		err := s.nginxReload(ctx)
-		if err != nil {
-			if errors.Is(err, ErrProxyNotReady) {
-				log.Printf("[nginx] done (waiting for %s)", proxyContainerName)
-
-				return nil
-			}
-
-			return err
-		}
-	} else {
+	if !(isMainUpdated || anyConfChanged || certsChanged || forceReload || pending) {
 		log.Printf("[nginx] no reload needed")
+		log.Printf("[nginx] done")
+
+		return nil
+	}
+
+	log.Printf(
+		"[nginx] reloading %s (mainUpdated=%v confChanged=%v certsChanged=%v forceReload=%v pending=%v)",
+		proxyContainerName, isMainUpdated, anyConfChanged, certsChanged, forceReload, pending,
+	)
+
+	err = s.nginxReload(ctx)
+	if err != nil {
+		if errors.Is(err, ErrProxyNotReady) {
+			log.Printf("[nginx] done (waiting for %s)", proxyContainerName)
+
+			return nil
+		}
+
+		return err
 	}
 
 	log.Printf("[nginx] done")
@@ -216,7 +209,12 @@ func (s *RoutingService) reloadNginxIfNeeded(
 }
 
 func (s *RoutingService) nginxReload(ctx context.Context) error {
-	err := s.proxy.TestConfiguration(ctx, s.timeouts.NginxCLI)
+	err := s.fs.MarkReloadPending()
+	if err != nil {
+		return fmt.Errorf("mark reload pending: %w", err)
+	}
+
+	err = s.proxy.TestConfiguration(ctx, s.timeouts.NginxCLI)
 	if err != nil {
 		return fmt.Errorf("nginx test before reload: %w", err)
 	}
@@ -224,6 +222,11 @@ func (s *RoutingService) nginxReload(ctx context.Context) error {
 	err = s.proxy.Reload(ctx, s.timeouts.NginxCLI)
 	if err != nil {
 		return fmt.Errorf("nginx reload: %w", err)
+	}
+
+	err = s.fs.ClearReloadPending()
+	if err != nil {
+		return fmt.Errorf("clear reload pending: %w", err)
 	}
 
 	return nil

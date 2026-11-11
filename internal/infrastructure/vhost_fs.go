@@ -15,12 +15,14 @@ import (
 )
 
 const (
-	certsConfigFile = ".installedCert"
-	certTimeLayout  = "2006-01-02T15:04:05.000"
-	certIssueMock   = "mock"
-	certIssueProd   = "prod"
-	legacyAppConf   = "app.conf"
-	legacySSLConf   = "ssl.conf"
+	certsConfigFile   = ".installedCert"
+	certTimeLayout    = "2006-01-02T15:04:05.000"
+	certIssueMock     = "mock"
+	certIssueProd     = "prod"
+	legacyAppConf     = "app.conf"
+	legacySSLConf     = "ssl.conf"
+	reloadPendingName = ".reload_pending"
+	reloadPendingMode = fileModePrivate
 )
 
 var errNginxHostIsDir = errors.New("nginx host path is a directory (expected file)")
@@ -36,6 +38,7 @@ func NewVhostFS(infraDir string) *VhostFS {
 }
 
 // EnsureHostFiles writes bind-mounted nginx files and verifies they are regular files.
+// Asset changes mark nginx/.reload_pending via UpdateMainNginxConfig.
 func (f *VhostFS) EnsureHostFiles() error {
 	_, err := f.UpdateMainNginxConfig()
 	if err != nil {
@@ -79,7 +82,17 @@ func (f *VhostFS) UpdateMainNginxConfig() (bool, error) {
 		return false, err
 	}
 
-	return nginxConfChanged || sslOptsChanged || dhParamsChanged, nil
+	changed := nginxConfChanged || sslOptsChanged || dhParamsChanged
+	if !changed {
+		return false, nil
+	}
+
+	err = f.MarkReloadPending()
+	if err != nil {
+		return true, err
+	}
+
+	return true, nil
 }
 
 // PrepareConfDir creates nginx/conf and removes legacy conf files.
@@ -105,10 +118,21 @@ func (f *VhostFS) PrepareConfDir() error {
 }
 
 // WriteConfig writes a conf.d file with backup + optional validate callback.
+// A content change marks nginx/.reload_pending before returning.
 func (f *VhostFS) WriteConfig(fileName, content string, validate func() error) (bool, error) {
 	dest := filepath.Join(f.confDir(), fileName)
 
-	return writeWithBackup(dest, content, validate)
+	changed, err := writeWithBackup(dest, content, validate)
+	if err != nil || !changed {
+		return changed, err
+	}
+
+	err = f.MarkReloadPending()
+	if err != nil {
+		return true, err
+	}
+
+	return true, nil
 }
 
 // RemoveStaleConfigs removes .conf files not in keepFileNames, with validate/rollback.
@@ -150,7 +174,59 @@ func (f *VhostFS) RemoveStaleConfigs(
 		log.Printf("[nginx] removed stale config %s", snap.path)
 	}
 
+	err = f.MarkReloadPending()
+	if err != nil {
+		return true, err
+	}
+
 	return true, nil
+}
+
+// MarkReloadPending records that live nginx still needs to pick up disk conf.
+func (f *VhostFS) MarkReloadPending() error {
+	nginxDir := f.nginxDir()
+
+	err := os.MkdirAll(nginxDir, dirModeTraversable) // #nosec G301
+	if err != nil {
+		return fmt.Errorf("mkdir nginx dir: %w", err)
+	}
+
+	pendingPath := filepath.Join(nginxDir, reloadPendingName)
+
+	_, err = writeFile(pendingPath, "", reloadPendingMode)
+	if err != nil {
+		return fmt.Errorf("mark reload pending: %w", err)
+	}
+
+	return nil
+}
+
+// HasReloadPending reports whether nginx/.reload_pending exists.
+func (f *VhostFS) HasReloadPending() (bool, error) {
+	pendingPath := filepath.Join(f.nginxDir(), reloadPendingName)
+
+	_, err := os.Stat(pendingPath)
+	if err == nil {
+		return true, nil
+	}
+
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("stat %s: %w", pendingPath, err)
+}
+
+// ClearReloadPending removes nginx/.reload_pending after a successful reload.
+func (f *VhostFS) ClearReloadPending() error {
+	pendingPath := filepath.Join(f.nginxDir(), reloadPendingName)
+
+	err := os.Remove(pendingPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear reload pending: %w", err)
+	}
+
+	return nil
 }
 
 // SnapshotConfigs reads current conf files for the given identity→fileName map.
@@ -195,6 +271,13 @@ func (f *VhostFS) RestoreConfigSnapshots(
 
 		if f.restoreConfSnapshot(snap) {
 			changed = true
+		}
+	}
+
+	if changed {
+		err := f.MarkReloadPending()
+		if err != nil {
+			log.Printf("[nginx] WARN mark reload pending after restore: %v", err)
 		}
 	}
 
@@ -324,8 +407,12 @@ func (f *VhostFS) SaveInstalledCerts(certs []nginx.CertDescriptor) (bool, error)
 	return writeFile(certConfigFilePath(f.infraDir), builder.String(), fileModeReadable)
 }
 
+func (f *VhostFS) nginxDir() string {
+	return filepath.Join(f.infraDir, "nginx")
+}
+
 func (f *VhostFS) confDir() string {
-	return filepath.Join(f.infraDir, "nginx", "conf")
+	return filepath.Join(f.nginxDir(), "conf")
 }
 
 func nginxHostRelativeFiles() []string {

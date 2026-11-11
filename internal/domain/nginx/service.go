@@ -85,10 +85,15 @@ func (s *RoutingService) ProcessRouting(ctx context.Context, params RoutingParam
 		return err
 	}
 
+	reloadPending, err := s.fs.HasReloadPending()
+	if err != nil {
+		return fmt.Errorf("reload pending: %w", err)
+	}
+
 	canIssue, reloaded, err := s.prepareCertIssuance(
 		ctx, params.Projects, installedByName,
 		params.ProxyRunning, params.ProxyReady,
-		isMainUpdated || anyConfChanged || params.ForceReload, now,
+		isMainUpdated || anyConfChanged || params.ForceReload || reloadPending, now,
 	)
 	if err != nil {
 		return err

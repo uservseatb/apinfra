@@ -78,6 +78,62 @@ func confPath(infra, name string) string {
 	return filepath.Join(infra, "nginx", "conf", name)
 }
 
+func TestVhostFS_ReloadPending_MarkOnWriteAndClear(t *testing.T) {
+	t.Parallel()
+
+	vhost, infra := newVhostFS(t)
+	pendingPath := filepath.Join(infra, "nginx", ".reload_pending")
+
+	has, err := vhost.HasReloadPending()
+	if err != nil || has {
+		t.Fatalf("HasReloadPending before write = %v, %v", has, err)
+	}
+
+	changed, err := vhost.WriteConfig("app.conf", confNew, nil)
+	if err != nil || !changed {
+		t.Fatalf("WriteConfig: changed=%v err=%v", changed, err)
+	}
+
+	has, err = vhost.HasReloadPending()
+	if err != nil || !has {
+		t.Fatalf("content change must create pending: has=%v err=%v", has, err)
+	}
+
+	info, err := os.Stat(pendingPath)
+	if err != nil {
+		t.Fatalf("stat pending: %v", err)
+	}
+
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("pending mode = %v, want 0600", info.Mode().Perm())
+	}
+
+	changed, err = vhost.WriteConfig("app.conf", confNew, nil)
+	if err != nil || changed {
+		t.Fatalf("identical write: changed=%v err=%v", changed, err)
+	}
+
+	has, err = vhost.HasReloadPending()
+	if err != nil || !has {
+		t.Fatalf("identical write must keep pending: has=%v err=%v", has, err)
+	}
+
+	err = vhost.ClearReloadPending()
+	if err != nil {
+		t.Fatalf("ClearReloadPending: %v", err)
+	}
+
+	has, err = vhost.HasReloadPending()
+	if err != nil || has {
+		t.Fatalf("after clear HasReloadPending = %v, %v", has, err)
+	}
+
+	err = vhost.ClearReloadPending()
+	if err != nil {
+		t.Fatalf("clear absent pending must be a no-op: %v", err)
+	}
+}
+
 func TestVhostFS_EnsureHostFiles_WritesAssetsIdempotentlyAndHealsDirs(t *testing.T) {
 	t.Parallel()
 
@@ -86,6 +142,16 @@ func TestVhostFS_EnsureHostFiles_WritesAssetsIdempotentlyAndHealsDirs(t *testing
 	err := vhost.EnsureHostFiles()
 	if err != nil {
 		t.Fatalf("EnsureHostFiles: %v", err)
+	}
+
+	has, err := vhost.HasReloadPending()
+	if err != nil || !has {
+		t.Fatalf("first EnsureHostFiles must mark reload pending: has=%v err=%v", has, err)
+	}
+
+	err = vhost.ClearReloadPending()
+	if err != nil {
+		t.Fatalf("ClearReloadPending: %v", err)
 	}
 
 	hostFiles := []string{
