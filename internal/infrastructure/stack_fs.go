@@ -17,15 +17,16 @@ const (
 	fileModeReadable   = 0o644
 	fileModePrivate    = 0o600
 	fileModeOwnerRead  = 0o400
-	dirModeTraversable = 0o755
+	dirModePrivate     = 0o700
+	dirModeTraversable = 0o755 // nginx conf parents; not used for secret-bearing app stacks
 
-	infraEnvFileMode = fileModeOwnerRead
-
-	appsDirName      = "apps"
-	composeFileName  = "docker-compose.yml"
-	envFileName      = ".env"
-	applyPendingName = ".apply_pending"
-	applyPendingMode = fileModePrivate
+	infraEnvFileMode   = fileModeOwnerRead
+	appComposeFileMode = fileModeOwnerRead
+	applyPendingMode   = fileModePrivate
+	appsDirName        = "apps"
+	composeFileName    = "docker-compose.yml"
+	envFileName        = ".env"
+	applyPendingName   = ".apply_pending"
 )
 
 var (
@@ -57,6 +58,7 @@ func (f *StackFS) WriteProxyCompose(content string) (bool, error) {
 
 // WriteAppStack writes apps/<name>/docker-compose.yml and .env.
 // When either file content will change, .apply_pending is written first.
+// App dirs are owner-only (0700); compose/.env are owner-readable (0400).
 // changed is true when either file content changed.
 func (f *StackFS) WriteAppStack(projectName, composeContent, envContent string) (bool, error) {
 	appDir, err := appDirPath(f.infraDir, projectName)
@@ -64,9 +66,9 @@ func (f *StackFS) WriteAppStack(projectName, composeContent, envContent string) 
 		return false, fmt.Errorf("project %s: %w", projectName, err)
 	}
 
-	err = os.MkdirAll(appDir, dirModeTraversable) // #nosec G301 -- infra layout world-traversable
+	err = ensurePrivateAppDir(appDir)
 	if err != nil {
-		return false, fmt.Errorf("project %s mkdir %s: %w", projectName, appDir, err)
+		return false, fmt.Errorf("project %s: %w", projectName, err)
 	}
 
 	envPath := filepath.Join(appDir, envFileName)
@@ -89,7 +91,7 @@ func (f *StackFS) WriteAppStack(projectName, composeContent, envContent string) 
 		return false, fmt.Errorf("project %s write .env: %w", projectName, err)
 	}
 
-	composeChanged, err := writeFile(composePath, composeContent, fileModeReadable)
+	composeChanged, err := writeFile(composePath, composeContent, appComposeFileMode)
 	if err != nil {
 		return false, fmt.Errorf("project %s write docker-compose.yml: %w", projectName, err)
 	}
@@ -109,9 +111,9 @@ func (f *StackFS) MarkApplyPending(projectName string) error {
 		return fmt.Errorf("project %s: %w", projectName, err)
 	}
 
-	err = os.MkdirAll(appDir, dirModeTraversable) // #nosec G301 -- infra layout world-traversable
+	err = ensurePrivateAppDir(appDir)
 	if err != nil {
-		return fmt.Errorf("project %s mkdir %s: %w", projectName, appDir, err)
+		return fmt.Errorf("project %s: %w", projectName, err)
 	}
 
 	pendingPath := filepath.Join(appDir, applyPendingName)
@@ -267,6 +269,25 @@ func appDirPath(infraDirPath, projectName string) (string, error) {
 	}
 
 	return dir, nil
+}
+
+// ensurePrivateAppDir creates apps/<name> and heals owner-only modes on the
+// apps root and project directory (including trees previously left at 0755).
+func ensurePrivateAppDir(appDir string) error {
+	err := os.MkdirAll(appDir, dirModePrivate)
+	if err != nil {
+		return fmt.Errorf("mkdir %s: %w", appDir, err)
+	}
+
+	appsRoot := filepath.Dir(appDir)
+	for _, dir := range []string{appsRoot, appDir} {
+		chmodErr := os.Chmod(dir, dirModePrivate)
+		if chmodErr != nil {
+			return fmt.Errorf("chmod 0700 %s: %w", dir, chmodErr)
+		}
+	}
+
+	return nil
 }
 
 func isLocalSubpath(rel string) bool {

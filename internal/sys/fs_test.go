@@ -8,7 +8,7 @@ import (
 	"github.com/uservseatb/apinfra/internal/sys"
 )
 
-func TestEnsureInfraLayout_CreatesTreeAndEnforcesTraversableModes(t *testing.T) {
+func TestEnsureInfraLayout_CreatesTreeAndEnforcesModes(t *testing.T) {
 	t.Parallel()
 
 	infra := filepath.Join(t.TempDir(), "home", "infra")
@@ -17,7 +17,7 @@ func TestEnsureInfraLayout_CreatesTreeAndEnforcesTraversableModes(t *testing.T) 
 	nginxDir := filepath.Join(infra, "nginx")
 
 	for _, dir := range []string{apps, certbot, nginxDir} {
-		err := os.MkdirAll(dir, 0o750)
+		err := os.MkdirAll(dir, 0o755)
 		if err != nil {
 			t.Fatalf("seed %s: %v", dir, err)
 		}
@@ -32,10 +32,9 @@ func TestEnsureInfraLayout_CreatesTreeAndEnforcesTraversableModes(t *testing.T) 
 		}
 	}
 
-	wantDirs := []string{
+	traversable := []string{
 		filepath.Dir(infra),
 		infra,
-		apps,
 		certbot,
 		nginxDir,
 		filepath.Join(infra, "nginx", "conf"),
@@ -45,18 +44,26 @@ func TestEnsureInfraLayout_CreatesTreeAndEnforcesTraversableModes(t *testing.T) 
 		filepath.Join(infra, "mockcerts"),
 	}
 
-	for _, dir := range wantDirs {
-		info, statErr := os.Stat(dir)
-		if statErr != nil {
-			t.Fatalf("Stat(%s): %v", dir, statErr)
-		}
+	for _, dir := range traversable {
+		assertDirMode(t, dir, 0o755)
+	}
 
-		if !info.IsDir() {
-			t.Fatalf("%s is not a directory", dir)
-		}
+	assertDirMode(t, apps, 0o700)
+}
 
-		if info.Mode().Perm() != 0o755 {
-			t.Fatalf("%s mode = %v, want 0755", dir, info.Mode().Perm())
-		}
+func assertDirMode(t *testing.T, dir string, want os.FileMode) {
+	t.Helper()
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", dir, err)
+	}
+
+	if !info.IsDir() {
+		t.Fatalf("%s is not a directory", dir)
+	}
+
+	if info.Mode().Perm() != want {
+		t.Fatalf("%s mode = %v, want %v", dir, info.Mode().Perm(), want)
 	}
 }

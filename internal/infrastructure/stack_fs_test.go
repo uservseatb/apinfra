@@ -85,13 +85,79 @@ func TestStackFS_WriteAppStack_IsIdempotentAndKeepsEnvPrivate(t *testing.T) {
 	}
 
 	composeInfo, err := os.Stat(composePath)
-	if err != nil || composeInfo.Mode().Perm() != 0o644 {
-		t.Fatalf("compose mode = %v err=%v, want 0644", composeInfo.Mode().Perm(), err)
+	if err != nil || composeInfo.Mode().Perm() != 0o400 {
+		t.Fatalf("compose mode = %v err=%v, want 0400", composeInfo.Mode().Perm(), err)
 	}
+
+	assertOwnerOnlyDir(t, filepath.Join(infra, "apps"))
+	assertOwnerOnlyDir(t, appDir)
 
 	changed, err = stack.WriteAppStack("shop", composeV2, envV2)
 	if err != nil || !changed {
 		t.Fatalf("compose update: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestStackFS_WriteAppStack_HealsLegacyPermissiveModes(t *testing.T) {
+	t.Parallel()
+
+	stack, infra := newStackFS(t)
+	appsRoot := filepath.Join(infra, "apps")
+	appDir := filepath.Join(appsRoot, "shop")
+	composePath := filepath.Join(appDir, "docker-compose.yml")
+	envPath := filepath.Join(appDir, ".env")
+
+	err := os.MkdirAll(appDir, 0o755)
+	if err != nil {
+		t.Fatalf("seed app dir: %v", err)
+	}
+
+	seedWorldReadable(t, composePath, composeV1)
+	seedWorldReadable(t, envPath, envV1)
+
+	changed, err := stack.WriteAppStack("shop", composeV1, envV1)
+	if err != nil || changed {
+		t.Fatalf("identical heal write: changed=%v err=%v, want false/nil", changed, err)
+	}
+
+	assertOwnerOnlyDir(t, appsRoot)
+	assertOwnerOnlyDir(t, appDir)
+
+	composeInfo, err := os.Stat(composePath)
+	if err != nil || composeInfo.Mode().Perm() != 0o400 {
+		t.Fatalf("compose mode = %v err=%v, want 0400", composeInfo.Mode().Perm(), err)
+	}
+
+	envInfo, err := os.Stat(envPath)
+	if err != nil || envInfo.Mode().Perm() != 0o400 {
+		t.Fatalf(".env mode = %v err=%v, want 0400", envInfo.Mode().Perm(), err)
+	}
+}
+
+func seedWorldReadable(t *testing.T, path, content string) {
+	t.Helper()
+
+	err := os.WriteFile(path, []byte(content), 0o600)
+	if err != nil {
+		t.Fatalf("seed %s: %v", path, err)
+	}
+
+	err = os.Chmod(path, 0o644)
+	if err != nil {
+		t.Fatalf("chmod 0644 %s: %v", path, err)
+	}
+}
+
+func assertOwnerOnlyDir(t *testing.T, dir string) {
+	t.Helper()
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", dir, err)
+	}
+
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("%s mode = %v, want 0700", dir, info.Mode().Perm())
 	}
 }
 
