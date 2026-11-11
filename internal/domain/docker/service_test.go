@@ -602,6 +602,132 @@ func TestApply_PullFailureDoesNotBlockOtherApps(t *testing.T) {
 	}
 }
 
+func TestApply_PendingRetriesAfterPullFailure(t *testing.T) {
+	t.Parallel()
+
+	env := newDockerEnv(t)
+	projectV1 := shopProject(baseCompose)
+	projectV2 := shopProject(baseCompose + "    environment:\n      MARKER: \"v2\"\n")
+
+	_, err := env.applyAll(t, projectV1)
+	if err != nil {
+		t.Fatalf("baseline Apply: %v", err)
+	}
+
+	if env.hasApplyPending(t) {
+		t.Fatal("successful up must clear .apply_pending")
+	}
+
+	env.lister.containers = []docker.Container{proxyUp(time.Minute), appRunning(projShop)}
+	env.cli.calls = nil
+	env.cli.errs["pull-app:shop"] = errTestPull
+
+	_, err = env.applyAll(t, projectV2)
+	if !errors.Is(err, errTestPull) {
+		t.Fatalf("err = %v, want pull failure", err)
+	}
+
+	if hasCall(env.cli.calls, "up-app:shop") {
+		t.Fatalf("up must not run after failed pull: %v", env.cli.calls)
+	}
+
+	if !env.hasApplyPending(t) {
+		t.Fatal("failed apply must leave .apply_pending")
+	}
+
+	env.cli.errs = map[string]error{}
+	env.cli.calls = nil
+
+	_, err = env.applyAll(t, projectV2)
+	if err != nil {
+		t.Fatalf("retry Apply: %v", err)
+	}
+
+	wantRetry := []string{"pull-app:shop", "up-app:shop"}
+	if !slices.Equal(env.cli.calls, wantRetry) {
+		t.Fatalf("pending retry calls = %v, want %v", env.cli.calls, wantRetry)
+	}
+
+	if env.hasApplyPending(t) {
+		t.Fatal("successful retry must clear .apply_pending")
+	}
+
+	env.cli.calls = nil
+
+	_, err = env.applyAll(t, projectV2)
+	if err != nil {
+		t.Fatalf("stable Apply: %v", err)
+	}
+
+	if len(env.cli.calls) != 0 {
+		t.Fatalf("healthy cycle must not restart: %v", env.cli.calls)
+	}
+}
+
+func TestApply_PendingRetriesAfterLoginFailure(t *testing.T) {
+	t.Parallel()
+
+	env := newDockerEnv(t)
+	projectV1 := shopProject(baseCompose)
+	projectV2 := shopProject(baseCompose + "    environment:\n      MARKER: \"v2\"\n")
+	creds := map[string]string{keyRegHost: "https://ghcr.io", keyRegUser: "bot", keyRegToken: "s3cret"}
+
+	_, err := env.apply(t, []docker.Project{projectV1}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("baseline Apply: %v", err)
+	}
+
+	env.lister.containers = []docker.Container{proxyUp(time.Minute), appRunning(projShop)}
+	env.cli.calls = nil
+	env.cli.errs["login:https://ghcr.io"] = errTestLogin
+
+	_, err = env.apply(t, []docker.Project{projectV2}, nil, creds, true)
+	if !errors.Is(err, errTestLogin) {
+		t.Fatalf("err = %v, want login failure", err)
+	}
+
+	if hasCall(env.cli.calls, "pull-app:shop") || hasCall(env.cli.calls, "up-app:shop") {
+		t.Fatalf("pull/up must not run after login failure: %v", env.cli.calls)
+	}
+
+	if !env.hasApplyPending(t) {
+		t.Fatal("failed login after stack change must leave .apply_pending")
+	}
+
+	env.cli.errs = map[string]error{}
+	env.cli.calls = nil
+
+	_, err = env.apply(t, []docker.Project{projectV2}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("retry Apply: %v", err)
+	}
+
+	if !hasCall(env.cli.calls, "pull-app:shop") || !hasCall(env.cli.calls, "up-app:shop") {
+		t.Fatalf("pending must force pull/up: %v", env.cli.calls)
+	}
+
+	if env.hasApplyPending(t) {
+		t.Fatal("successful retry must clear .apply_pending")
+	}
+}
+
+func (e *dockerEnv) hasApplyPending(t *testing.T) bool {
+	t.Helper()
+
+	_, err := os.Stat(filepath.Join(e.infra, "apps", projShop, ".apply_pending"))
+	if err == nil {
+		return true
+	}
+
+	if os.IsNotExist(err) {
+		return false
+	}
+
+	t.Fatalf("stat .apply_pending: %v", err)
+
+	return false
+}
+
 func TestApply_RegistryLogin(t *testing.T) {
 	t.Parallel()
 

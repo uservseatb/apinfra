@@ -199,6 +199,21 @@ func TestStackFS_RejectsUnsafeProjectNames(t *testing.T) {
 				t.Fatal("AppComposeExists must reject")
 			}
 
+			err = stack.MarkApplyPending(name)
+			if err == nil {
+				t.Fatal("MarkApplyPending must reject")
+			}
+
+			_, err = stack.HasApplyPending(name)
+			if err == nil {
+				t.Fatal("HasApplyPending must reject")
+			}
+
+			err = stack.ClearApplyPending(name)
+			if err == nil {
+				t.Fatal("ClearApplyPending must reject")
+			}
+
 			err = stack.RemoveAppDir(name)
 			if err == nil {
 				t.Fatal("RemoveAppDir must reject")
@@ -213,5 +228,80 @@ func TestStackFS_RejectsUnsafeProjectNames(t *testing.T) {
 				t.Fatalf("files created outside infra: %v", entries)
 			}
 		})
+	}
+}
+
+func TestStackFS_ApplyPending_MarkBeforeWriteAndClear(t *testing.T) {
+	t.Parallel()
+
+	stack, infra := newStackFS(t)
+	pendingPath := filepath.Join(infra, "apps", "shop", ".apply_pending")
+
+	has, err := stack.HasApplyPending("shop")
+	if err != nil || has {
+		t.Fatalf("HasApplyPending before write = %v, %v", has, err)
+	}
+
+	changed, err := stack.WriteAppStack("shop", composeV1, envV1)
+	if err != nil || !changed {
+		t.Fatalf("first write: changed=%v err=%v", changed, err)
+	}
+
+	has, err = stack.HasApplyPending("shop")
+	if err != nil || !has {
+		t.Fatalf("content change must create pending: has=%v err=%v", has, err)
+	}
+
+	info, err := os.Stat(pendingPath)
+	if err != nil {
+		t.Fatalf("stat pending: %v", err)
+	}
+
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("pending mode = %v, want 0600", info.Mode().Perm())
+	}
+
+	changed, err = stack.WriteAppStack("shop", composeV1, envV1)
+	if err != nil || changed {
+		t.Fatalf("identical write: changed=%v err=%v", changed, err)
+	}
+
+	has, err = stack.HasApplyPending("shop")
+	if err != nil || !has {
+		t.Fatalf("identical write must keep pending: has=%v err=%v", has, err)
+	}
+
+	err = stack.ClearApplyPending("shop")
+	if err != nil {
+		t.Fatalf("ClearApplyPending: %v", err)
+	}
+
+	has, err = stack.HasApplyPending("shop")
+	if err != nil || has {
+		t.Fatalf("after clear HasApplyPending = %v, %v", has, err)
+	}
+
+	err = stack.ClearApplyPending("shop")
+	if err != nil {
+		t.Fatalf("clear absent pending must be a no-op: %v", err)
+	}
+
+	changed, err = stack.WriteAppStack("shop", composeV2, envV1)
+	if err != nil || !changed {
+		t.Fatalf("compose update: changed=%v err=%v", changed, err)
+	}
+
+	has, err = stack.HasApplyPending("shop")
+	if err != nil || !has {
+		t.Fatalf("compose update must set pending again: has=%v err=%v", has, err)
+	}
+
+	err = stack.RemoveAppDir("shop")
+	if err != nil {
+		t.Fatalf("RemoveAppDir: %v", err)
+	}
+
+	if exists(pendingPath) {
+		t.Fatal("RemoveAppDir must remove pending with the app dir")
 	}
 }

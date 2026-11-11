@@ -21,9 +21,11 @@ const (
 
 	infraEnvFileMode = fileModeOwnerRead
 
-	appsDirName     = "apps"
-	composeFileName = "docker-compose.yml"
-	envFileName     = ".env"
+	appsDirName      = "apps"
+	composeFileName  = "docker-compose.yml"
+	envFileName      = ".env"
+	applyPendingName = ".apply_pending"
+	applyPendingMode = fileModePrivate
 )
 
 var (
@@ -54,6 +56,7 @@ func (f *StackFS) WriteProxyCompose(content string) (bool, error) {
 }
 
 // WriteAppStack writes apps/<name>/docker-compose.yml and .env.
+// When either file content will change, .apply_pending is written first.
 // changed is true when either file content changed.
 func (f *StackFS) WriteAppStack(projectName, composeContent, envContent string) (bool, error) {
 	appDir, err := appDirPath(f.infraDir, projectName)
@@ -67,13 +70,24 @@ func (f *StackFS) WriteAppStack(projectName, composeContent, envContent string) 
 	}
 
 	envPath := filepath.Join(appDir, envFileName)
+	composePath := filepath.Join(appDir, composeFileName)
+
+	wouldChange, err := appStackWouldChange(envPath, composePath, envContent, composeContent)
+	if err != nil {
+		return false, fmt.Errorf("project %s: %w", projectName, err)
+	}
+
+	if wouldChange {
+		err = f.MarkApplyPending(projectName)
+		if err != nil {
+			return false, err
+		}
+	}
 
 	envChanged, err := writeFile(envPath, envContent, infraEnvFileMode)
 	if err != nil {
 		return false, fmt.Errorf("project %s write .env: %w", projectName, err)
 	}
-
-	composePath := filepath.Join(appDir, composeFileName)
 
 	composeChanged, err := writeFile(composePath, composeContent, fileModeReadable)
 	if err != nil {
@@ -86,6 +100,62 @@ func (f *StackFS) WriteAppStack(projectName, composeContent, envContent string) 
 	)
 
 	return composeChanged || envChanged, nil
+}
+
+// MarkApplyPending records that apps/<name> still needs a successful compose up.
+func (f *StackFS) MarkApplyPending(projectName string) error {
+	appDir, err := appDirPath(f.infraDir, projectName)
+	if err != nil {
+		return fmt.Errorf("project %s: %w", projectName, err)
+	}
+
+	err = os.MkdirAll(appDir, dirModeTraversable) // #nosec G301 -- infra layout world-traversable
+	if err != nil {
+		return fmt.Errorf("project %s mkdir %s: %w", projectName, appDir, err)
+	}
+
+	pendingPath := filepath.Join(appDir, applyPendingName)
+
+	_, err = writeFile(pendingPath, "", applyPendingMode)
+	if err != nil {
+		return fmt.Errorf("project %s mark apply pending: %w", projectName, err)
+	}
+
+	return nil
+}
+
+// HasApplyPending reports whether apps/<name>/.apply_pending exists.
+func (f *StackFS) HasApplyPending(projectName string) (bool, error) {
+	pendingPath, err := applyPendingPath(f.infraDir, projectName)
+	if err != nil {
+		return false, err
+	}
+
+	_, err = os.Stat(pendingPath)
+	if err == nil {
+		return true, nil
+	}
+
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("stat %s: %w", pendingPath, err)
+}
+
+// ClearApplyPending removes apps/<name>/.apply_pending after a successful up.
+func (f *StackFS) ClearApplyPending(projectName string) error {
+	pendingPath, err := applyPendingPath(f.infraDir, projectName)
+	if err != nil {
+		return err
+	}
+
+	err = os.Remove(pendingPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("project %s clear apply pending: %w", projectName, err)
+	}
+
+	return nil
 }
 
 // ListAppDirs returns directory names under apps/.
@@ -155,6 +225,32 @@ func appComposePath(infraDirPath, projectName string) (string, error) {
 	}
 
 	return filepath.Join(appDir, composeFileName), nil
+}
+
+func applyPendingPath(infraDirPath, projectName string) (string, error) {
+	appDir, err := appDirPath(infraDirPath, projectName)
+	if err != nil {
+		return "", fmt.Errorf("project %s: %w", projectName, err)
+	}
+
+	return filepath.Join(appDir, applyPendingName), nil
+}
+
+func appStackWouldChange(envPath, composePath, envContent, composeContent string) (bool, error) {
+	envOrig, envExists, err := readExistingFile(envPath)
+	if err != nil {
+		return false, err
+	}
+
+	composeOrig, composeExists, err := readExistingFile(composePath)
+	if err != nil {
+		return false, err
+	}
+
+	envChanged := !envExists || string(envOrig) != envContent
+	composeChanged := !composeExists || string(composeOrig) != composeContent
+
+	return envChanged || composeChanged, nil
 }
 
 func appDirPath(infraDirPath, projectName string) (string, error) {

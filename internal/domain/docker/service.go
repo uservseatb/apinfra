@@ -80,8 +80,8 @@ func NewService(
 
 // Apply writes the proxy stack and per-project stacks via StackFileSystem.
 // When applyContainers is false, only writes compose/.env files (no pull/up/down).
-// When applyContainers is true, starts stacks whose docker-compose.yml content
-// changed or that are not fully running (including deleted services),
+// When applyContainers is true, starts stacks whose content changed, that have
+// .apply_pending, or that are not fully running (including deleted services),
 // sequentially, and downs disabled/removed apps.
 func (s *Service) Apply(
 	ctx context.Context,
@@ -108,7 +108,7 @@ func (s *Service) Apply(
 		return result, err
 	}
 
-	enabled, stackChanged, desiredServices, err := s.writeAllAppStacks(ctx, projects, hostEnv)
+	enabled, stackChanged, applyPending, desiredServices, err := s.writeAllAppStacks(ctx, projects, hostEnv)
 	if err != nil {
 		return result, err
 	}
@@ -123,7 +123,7 @@ func (s *Service) Apply(
 	}
 
 	result, err = s.applyRunningStacks(
-		ctx, hostSettings, proxyChanged, enabled, stackChanged, desiredServices, result.ProxyHosts,
+		ctx, hostSettings, proxyChanged, enabled, stackChanged, applyPending, desiredServices, result.ProxyHosts,
 	)
 	if err != nil {
 		return result, err
@@ -200,9 +200,10 @@ func (s *Service) writeAllAppStacks(
 	ctx context.Context,
 	projects []Project,
 	hostEnv map[string]string,
-) ([]string, map[string]struct{}, map[string]map[string]struct{}, error) {
+) ([]string, map[string]struct{}, map[string]struct{}, map[string]map[string]struct{}, error) {
 	enabled := make([]string, 0, len(projects))
 	stackChanged := map[string]struct{}{}
+	applyPending := map[string]struct{}{}
 	desiredServices := make(map[string]map[string]struct{}, len(projects))
 
 	for i := range projects {
@@ -211,7 +212,7 @@ func (s *Service) writeAllAppStacks(
 
 		changed, services, err := s.writeAppStack(ctx, project, hostEnv)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 
 		desiredServices[composeProjectName(project.Name)] = services
@@ -219,9 +220,18 @@ func (s *Service) writeAllAppStacks(
 		if changed {
 			stackChanged[project.Name] = struct{}{}
 		}
+
+		pending, pendingErr := s.fs.HasApplyPending(project.Name)
+		if pendingErr != nil {
+			return nil, nil, nil, nil, fmt.Errorf("project %s apply pending: %w", project.Name, pendingErr)
+		}
+
+		if pending {
+			applyPending[project.Name] = struct{}{}
+		}
 	}
 
-	return enabled, stackChanged, desiredServices, nil
+	return enabled, stackChanged, applyPending, desiredServices, nil
 }
 
 func (s *Service) applyRunningStacks(
@@ -229,7 +239,7 @@ func (s *Service) applyRunningStacks(
 	hostSettings map[string]string,
 	proxyChanged bool,
 	enabled []string,
-	stackChanged map[string]struct{},
+	stackChanged, applyPending map[string]struct{},
 	desiredServices map[string]map[string]struct{},
 	proxyHosts map[string]string,
 ) (ApplyResult, error) {
@@ -242,7 +252,7 @@ func (s *Service) applyRunningStacks(
 
 	enabledSet := enabledNameSet(enabled)
 	appsToStart, needProxy, proxyRunning, proxyReady, containers := s.planStacksToStart(
-		ctx, proxyChanged, enabled, stackChanged, desiredServices,
+		ctx, proxyChanged, enabled, stackChanged, applyPending, desiredServices,
 	)
 	result.ProxyRunning = proxyRunning
 	result.ProxyReady = proxyReady
@@ -252,7 +262,7 @@ func (s *Service) applyRunningStacks(
 		return result, err
 	}
 
-	logComposePlan(needProxy, proxyChanged, appsToStart, stackChanged, appsToDown)
+	logComposePlan(needProxy, proxyChanged, appsToStart, stackChanged, applyPending, appsToDown)
 
 	if needProxy || len(appsToStart) > 0 {
 		err = s.dockerLogin(ctx, hostSettings)
@@ -278,7 +288,7 @@ func (s *Service) applyRunningStacks(
 func logComposePlan(
 	needProxy, proxyChanged bool,
 	appsToStart []string,
-	stackChanged map[string]struct{},
+	stackChanged, applyPending map[string]struct{},
 	appsToDown []string,
 ) {
 	var proxyReason string
@@ -300,17 +310,30 @@ func logComposePlan(
 	)
 
 	for _, name := range appsToStart {
-		reason := "not_running"
-		if _, changed := stackChanged[name]; changed {
-			reason = "stack_changed"
-		}
-
+		reason := startReason(name, stackChanged, applyPending)
 		log.Printf("[docker] plan start project=%s reason=%s", name, reason)
 	}
 
 	for _, name := range appsToDown {
 		log.Printf("[docker] plan down project=%s", name)
 	}
+}
+
+func startReason(name string, stackChanged, applyPending map[string]struct{}) string {
+	switch {
+	case hasKey(stackChanged, name):
+		return "stack_changed"
+	case hasKey(applyPending, name):
+		return "apply_pending"
+	default:
+		return "not_running"
+	}
+}
+
+func hasKey(set map[string]struct{}, key string) bool {
+	_, ok := set[key]
+
+	return ok
 }
 
 func formatNameList(names []string) string {
@@ -473,7 +496,7 @@ func (s *Service) planStacksToStart(
 	ctx context.Context,
 	proxyChanged bool,
 	enabled []string,
-	stackChanged map[string]struct{},
+	stackChanged, applyPending map[string]struct{},
 	desiredServices map[string]map[string]struct{},
 ) ([]string, bool, bool, bool, []Container) {
 	listCtx, cancel := context.WithTimeout(ctx, s.timeouts.API)
@@ -482,29 +505,29 @@ func (s *Service) planStacksToStart(
 	containers, err := s.lister.ListContainers(listCtx)
 	if err != nil {
 		log.Printf(
-			"[docker] WARN container list: %v (state unknown; starting only changed stacks; nginx certs deferred)",
+			"[docker] WARN container list: %v (state unknown; starting only changed/pending stacks; nginx certs deferred)",
 			err,
 		)
 
-		return appsWithStackChanged(enabled, stackChanged), proxyChanged, false, false, nil
+		return appsWithStackMarkers(enabled, stackChanged, applyPending), proxyChanged, false, false, nil
 	}
 
 	runningProjects := runningComposeProjects(containers, desiredServices)
 	proxyRunning := proxyRunningAmong(containers)
 	proxyReady := proxyReadyAmong(containers)
 
-	return appsNeedingStart(enabled, stackChanged, runningProjects),
+	return appsNeedingStart(enabled, stackChanged, applyPending, runningProjects),
 		proxyChanged || !proxyRunning,
 		proxyRunning,
 		proxyReady,
 		containers
 }
 
-func appsWithStackChanged(enabled []string, stackChanged map[string]struct{}) []string {
-	out := make([]string, 0, len(stackChanged))
+func appsWithStackMarkers(enabled []string, stackChanged, applyPending map[string]struct{}) []string {
+	out := make([]string, 0, len(enabled))
 
 	for _, name := range enabled {
-		if _, changed := stackChanged[name]; changed {
+		if hasKey(stackChanged, name) || hasKey(applyPending, name) {
 			out = append(out, name)
 		}
 	}
@@ -514,13 +537,13 @@ func appsWithStackChanged(enabled []string, stackChanged map[string]struct{}) []
 
 func appsNeedingStart(
 	enabled []string,
-	stackChanged map[string]struct{},
+	stackChanged, applyPending map[string]struct{},
 	runningProjects map[string]struct{},
 ) []string {
 	out := make([]string, 0, len(enabled))
 
 	for _, name := range enabled {
-		if _, changed := stackChanged[name]; changed {
+		if hasKey(stackChanged, name) || hasKey(applyPending, name) {
 			out = append(out, name)
 
 			continue
@@ -749,6 +772,7 @@ func (s *Service) pullAndUpProxy(ctx context.Context) error {
 }
 
 // pullAndUpApp reports whether compose up was attempted (containers may have changed even if up failed).
+// .apply_pending is cleared only after a successful up.
 func (s *Service) pullAndUpApp(ctx context.Context, projectName string) (bool, error) {
 	log.Printf("[docker] pulling images project=%s (timeout=%s)...", projectName, s.timeouts.ComposePull)
 
@@ -765,6 +789,11 @@ func (s *Service) pullAndUpApp(ctx context.Context, projectName string) (bool, e
 	err = s.cli.ComposeUpApp(ctx, projectName, s.timeouts.ComposeUp)
 	if err != nil {
 		return true, fmt.Errorf("docker compose up project=%s: %w", projectName, err)
+	}
+
+	clearErr := s.fs.ClearApplyPending(projectName)
+	if clearErr != nil {
+		log.Printf("[docker] WARN clear apply pending project=%s: %v", projectName, clearErr)
 	}
 
 	log.Printf("[docker] project=%s up ok", projectName)

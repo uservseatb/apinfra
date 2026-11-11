@@ -9,6 +9,9 @@ import (
 type StackFileSystem interface {
 	WriteProxyCompose(content string) (changed bool, err error)
 	WriteAppStack(projectName, composeContent, envContent string) (changed bool, err error)
+	MarkApplyPending(projectName string) error
+	HasApplyPending(projectName string) (bool, error)
+	ClearApplyPending(projectName string) error
 	ListAppDirs() ([]string, error)
 	AppComposeExists(projectName string) (bool, error)
 	RemoveAppDir(projectName string) error
