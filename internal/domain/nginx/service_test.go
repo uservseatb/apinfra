@@ -1042,7 +1042,7 @@ func TestProcessRouting_ReloadPendingRetriesAfterFailure(t *testing.T) {
 	t.Parallel()
 
 	env := newRouteEnv(t)
-	fs := infrastructure.NewVhostFS(env.infra)
+	vhostFS := infrastructure.NewVhostFS(env.infra)
 
 	proj := portProject("none")
 	proj.EntryPointPort = "80"
@@ -1052,7 +1052,7 @@ func TestProcessRouting_ReloadPendingRetriesAfterFailure(t *testing.T) {
 		t.Fatalf("cycle 1: %v", err)
 	}
 
-	pending, err := fs.HasReloadPending()
+	pending, err := vhostFS.HasReloadPending()
 	if err != nil || pending {
 		t.Fatalf("after success HasReloadPending = %v, %v", pending, err)
 	}
@@ -1065,7 +1065,7 @@ func TestProcessRouting_ReloadPendingRetriesAfterFailure(t *testing.T) {
 		t.Fatal("cycle 2: want reload failure")
 	}
 
-	pending, err = fs.HasReloadPending()
+	pending, err = vhostFS.HasReloadPending()
 	if err != nil || !pending {
 		t.Fatalf("after failed reload HasReloadPending = %v, %v", pending, err)
 	}
@@ -1088,7 +1088,7 @@ func TestProcessRouting_ReloadPendingRetriesAfterFailure(t *testing.T) {
 		t.Fatalf("unchanged cycle must retry reload: %d -> %d", reloadsBefore, env.proxy.reloads)
 	}
 
-	pending, err = fs.HasReloadPending()
+	pending, err = vhostFS.HasReloadPending()
 	if err != nil || pending {
 		t.Fatalf("after successful retry HasReloadPending = %v, %v", pending, err)
 	}
@@ -1109,7 +1109,7 @@ func TestProcessRouting_EnsureHostFilesPendingTriggersReload(t *testing.T) {
 	t.Parallel()
 
 	env := newRouteEnv(t)
-	fs := infrastructure.NewVhostFS(env.infra)
+	vhostFS := infrastructure.NewVhostFS(env.infra)
 
 	err := env.runLive(portProject("none"))
 	if err != nil {
@@ -1117,19 +1117,19 @@ func TestProcessRouting_EnsureHostFilesPendingTriggersReload(t *testing.T) {
 	}
 
 	reloadsBefore := env.proxy.reloads
-
 	nginxConf := filepath.Join(env.infra, "nginx", "nginx.conf")
-	err = os.WriteFile(nginxConf, []byte("# stale asset\n"), 0o644)
+
+	err = os.WriteFile(nginxConf, []byte("# stale asset\n"), 0o600)
 	if err != nil {
 		t.Fatalf("seed stale nginx.conf: %v", err)
 	}
 
-	err = fs.EnsureHostFiles()
+	err = vhostFS.EnsureHostFiles()
 	if err != nil {
 		t.Fatalf("EnsureHostFiles: %v", err)
 	}
 
-	pending, err := fs.HasReloadPending()
+	pending, err := vhostFS.HasReloadPending()
 	if err != nil || !pending {
 		t.Fatalf("asset change must mark pending: has=%v err=%v", pending, err)
 	}
@@ -1143,7 +1143,7 @@ func TestProcessRouting_EnsureHostFilesPendingTriggersReload(t *testing.T) {
 		t.Fatalf("pending asset change must reload: %d -> %d", reloadsBefore, env.proxy.reloads)
 	}
 
-	pending, err = fs.HasReloadPending()
+	pending, err = vhostFS.HasReloadPending()
 	if err != nil || pending {
 		t.Fatalf("after reload HasReloadPending = %v, %v", pending, err)
 	}

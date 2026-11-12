@@ -1,0 +1,82 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: apinfra
+
+builds:
+  - id: apinfra
+    main: ./cmd
+    binary: apinfra
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}}+registry-login
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+
+nfpms:
+  - id: deb
+    package_name: apinfra
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
+    vendor: apinfra
+    homepage: https://github.com/uservseatb/apinfra
+    maintainer: apinfra maintainers <maintainers@example.com>
+    description: |
+      GitOps agent for Docker Compose, Nginx and Let's Encrypt (lego).
+      Syncs a config repository, manages Docker Compose services,
+      Nginx reverse proxy routing, and Let's Encrypt certificates.
+    license: MIT
+    section: admin
+    priority: optional
+    formats:
+      - deb
+    # Binary lands at /home/ap/apinfra.
+    bindir: /home/ap
+    dependencies:
+      - docker.io | docker-ce
+      - docker-compose-v2 | docker-compose-plugin
+    contents:
+      - src: build/deb/apinfra.service
+        dst: /usr/lib/systemd/user/apinfra.service
+        file_info:
+          mode: 0o644
+      - src: build/deb/apinfra.timer
+        dst: /usr/lib/systemd/user/apinfra.timer
+        file_info:
+          mode: 0o644
+      - src: build/deb/apinfra.example
+        dst: /usr/share/apinfra/apinfra.example
+        file_info:
+          mode: 0o644
+      - src: build/deb/env.example
+        dst: /usr/share/apinfra/env.example
+        file_info:
+          mode: 0o644
+      - src: build/deb/trusted_images.example
+        dst: /usr/share/apinfra/trusted_images.example
+        file_info:
+          mode: 0o644
+    scripts:
+      # User `ap` must exist before unpacking into /home/ap (binary + home paths).
+      preinstall: build/deb/preinst
+      # Install/preserve ~/.apinfra, ~/.env, ~/.trusted_images; enable user timer.
+      postinstall: build/deb/postinst
+      # Stop timer/service and disable linger on remove/purge.
+      postremove: build/deb/postrm
+
+release:
+  # Local packaging only; publishing is handled separately (e.g. GitHub Actions).
+  disable: true

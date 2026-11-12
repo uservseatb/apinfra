@@ -83,10 +83,13 @@ sudo apt install -y ./apinfra_*.deb
 
 ```bash
 # Run from the apinfra project folder on your local computer
-./build/deb/package.sh
+# Requires GoReleaser: https://goreleaser.com/install/
+task package
+# equivalent: goreleaser release --snapshot --clean
 
-# The script will generate a package in the dist directory:
+# Packages land in dist/:
 # → dist/apinfra_<version>_amd64.deb
+# → dist/apinfra_<version>_arm64.deb
 ```
 
 #### Transfer and Install on the Server

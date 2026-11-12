@@ -180,7 +180,7 @@ func (s *RoutingService) reloadNginxIfNeeded(
 		return fmt.Errorf("reload pending: %w", err)
 	}
 
-	if !(isMainUpdated || anyConfChanged || certsChanged || forceReload || pending) {
+	if !isMainUpdated && !anyConfChanged && !certsChanged && !forceReload && !pending {
 		log.Printf("[nginx] no reload needed")
 		log.Printf("[nginx] done")
 

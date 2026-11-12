@@ -24,6 +24,7 @@ func (s *Service) getTrustedImages() map[string]struct{} {
 		s.trustedSet, loadErr = s.loadTrustedImageSet()
 		if loadErr != nil {
 			log.Printf("[docker] WARN load trusted images: %v (treating as empty allowlist)", loadErr)
+
 			s.trustedSet = map[string]struct{}{}
 		}
 	})
