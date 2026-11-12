@@ -682,8 +682,8 @@ func TestApply_PendingRetriesAfterLoginFailure(t *testing.T) {
 	env.cli.errs["login:https://ghcr.io"] = errTestLogin
 
 	_, err = env.apply(t, []docker.Project{projectV2}, nil, creds, true)
-	if !errors.Is(err, errTestLogin) {
-		t.Fatalf("err = %v, want login failure", err)
+	if !errors.Is(err, errTestLogin) || !errors.Is(err, docker.ErrLoginFailed) {
+		t.Fatalf("err = %v, want ErrLoginFailed wrapping login failure", err)
 	}
 
 	if hasCall(env.cli.calls, "pull-app:shop") || hasCall(env.cli.calls, "up-app:shop") {
@@ -785,6 +785,10 @@ func TestApply_RegistryLogin(t *testing.T) {
 			}
 
 			if tcase.wantEvent {
+				if !errors.Is(err, docker.ErrLoginFailed) {
+					t.Fatalf("err = %v, want ErrLoginFailed", err)
+				}
+
 				if len(env.events.got) != 1 || env.events.got[0].kind != "docker_login_failed" ||
 					env.events.got[0].fields["registry"] != "https://ghcr.io" {
 					t.Fatalf("events = %+v", env.events.got)

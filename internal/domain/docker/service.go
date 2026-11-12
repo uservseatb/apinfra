@@ -34,6 +34,10 @@ var (
 	errProxyTargetMissing      = errors.New("proxy.target.service-name not found in compose")
 	errNilContext              = errors.New("nil context")
 
+	// ErrLoginFailed is returned when registry docker login fails before pull/up.
+	// Deployment skips nginx and prune while this error is present.
+	ErrLoginFailed = errors.New("docker login failed")
+
 	// appNameFromLabelRE matches settings-style project names derived from compose -p labels.
 	appNameFromLabelRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 )
@@ -868,7 +872,7 @@ func (s *Service) dockerLogin(ctx context.Context, envs map[string]string) error
 			}
 		}
 
-		return fmt.Errorf("docker login %s: %w", host, err)
+		return fmt.Errorf("%w: docker login %s: %w", ErrLoginFailed, host, err)
 	}
 
 	log.Printf("[docker] registry login ok")

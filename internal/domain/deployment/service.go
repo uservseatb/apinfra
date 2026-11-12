@@ -40,7 +40,8 @@ func NewGitOpsDeploymentService(
 
 // ExecuteUpdateCycle runs prepare → docker → nginx → prune.
 // Failures are returned (joined when several steps fail); the caller decides whether
-// they are fatal. A failing app stack does not block nginx while the proxy is running.
+// they are fatal. A failing app stack does not block nginx while the proxy is running,
+// except docker login failures — pull/up never ran, so nginx is skipped.
 func (s *GitOpsDeploymentService) ExecuteUpdateCycle(ctx context.Context) error {
 	err := s.layout.EnsureLayout()
 	if err != nil {
@@ -113,7 +114,13 @@ func (s *GitOpsDeploymentService) applyNginxAndPrune(
 		return nil
 	}
 
-	if dockerErr != nil && !applyResult.ProxyRunning {
+	switch {
+	case errors.Is(dockerErr, docker.ErrLoginFailed):
+		log.Printf("[update] nginx processor: skipped (docker login failed)")
+		log.Printf("[update] pruning skipped (docker login failed)")
+
+		return nil
+	case dockerErr != nil && !applyResult.ProxyRunning:
 		log.Printf("[update] nginx processor: skipped (docker processor failed and proxy is not running)")
 		log.Printf("[update] pruning skipped (docker processor failed)")
 

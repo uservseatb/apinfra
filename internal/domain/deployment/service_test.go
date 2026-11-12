@@ -3,6 +3,7 @@ package deployment_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -155,6 +156,15 @@ func TestExecuteUpdateCycle(t *testing.T) {
 			wantApplied:     true,
 			wantApplyStarts: true,
 			wantRouted:      true,
+		},
+		{
+			name: "docker_login_failure_skips_nginx_and_prune_even_if_proxy_running",
+			mut: func(f *fakeEnv) {
+				f.applyErr = fmt.Errorf("%w: ghcr.io: %w", docker.ErrLoginFailed, errBoom)
+			},
+			wantErr:         "docker processor",
+			wantApplied:     true,
+			wantApplyStarts: true,
 		},
 		{
 			name: "docker_failure_with_proxy_down_skips_nginx_and_prune",
