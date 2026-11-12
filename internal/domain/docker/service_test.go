@@ -711,10 +711,86 @@ func TestApply_PendingRetriesAfterLoginFailure(t *testing.T) {
 	}
 }
 
+func TestApply_ProxyPendingRetriesAfterLoginFailure(t *testing.T) {
+	t.Parallel()
+
+	env := newDockerEnv(t)
+	projectV1 := shopProject(baseCompose)
+	projectV2 := shopProject(baseCompose)
+	projectV2.InboundPort = "9999"
+	creds := map[string]string{keyRegHost: "https://ghcr.io", keyRegUser: "bot", keyRegToken: "s3cret"}
+
+	_, err := env.apply(t, []docker.Project{projectV1}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("baseline Apply: %v", err)
+	}
+
+	if env.hasProxyApplyPending(t) {
+		t.Fatal("successful up must clear proxy .apply_pending")
+	}
+
+	env.lister.containers = []docker.Container{proxyUp(time.Minute), appRunning(projShop)}
+	env.cli.calls = nil
+	env.cli.errs["login:https://ghcr.io"] = errTestLogin
+
+	_, err = env.apply(t, []docker.Project{projectV2}, nil, creds, true)
+	if !errors.Is(err, errTestLogin) || !errors.Is(err, docker.ErrLoginFailed) {
+		t.Fatalf("err = %v, want ErrLoginFailed wrapping login failure", err)
+	}
+
+	if hasCall(env.cli.calls, "pull-proxy") || hasCall(env.cli.calls, "up-proxy") {
+		t.Fatalf("proxy pull/up must not run after login failure: %v", env.cli.calls)
+	}
+
+	if !env.hasProxyApplyPending(t) {
+		t.Fatal("failed login after proxy compose change must leave .apply_pending")
+	}
+
+	env.cli.errs = map[string]error{}
+	env.cli.calls = nil
+
+	_, err = env.apply(t, []docker.Project{projectV2}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("retry Apply: %v", err)
+	}
+
+	wantRetry := []string{"pull-proxy", "up-proxy"}
+	if !slices.Equal(env.cli.calls, wantRetry) {
+		t.Fatalf("proxy pending retry calls = %v, want %v", env.cli.calls, wantRetry)
+	}
+
+	if env.hasProxyApplyPending(t) {
+		t.Fatal("successful retry must clear proxy .apply_pending")
+	}
+
+	env.cli.calls = nil
+
+	_, err = env.apply(t, []docker.Project{projectV2}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("stable Apply: %v", err)
+	}
+
+	if len(env.cli.calls) != 0 {
+		t.Fatalf("healthy cycle must not restart proxy: %v", env.cli.calls)
+	}
+}
+
 func (e *dockerEnv) hasApplyPending(t *testing.T) bool {
 	t.Helper()
 
-	_, err := os.Stat(filepath.Join(e.infra, "apps", projShop, ".apply_pending"))
+	return e.hasPendingFile(t, filepath.Join(e.infra, "apps", projShop, ".apply_pending"))
+}
+
+func (e *dockerEnv) hasProxyApplyPending(t *testing.T) bool {
+	t.Helper()
+
+	return e.hasPendingFile(t, filepath.Join(e.infra, ".apply_pending"))
+}
+
+func (e *dockerEnv) hasPendingFile(t *testing.T, path string) bool {
+	t.Helper()
+
+	_, err := os.Stat(path)
 	if err == nil {
 		return true
 	}
@@ -723,7 +799,7 @@ func (e *dockerEnv) hasApplyPending(t *testing.T) bool {
 		return false
 	}
 
-	t.Fatalf("stat .apply_pending: %v", err)
+	t.Fatalf("stat %s: %v", path, err)
 
 	return false
 }

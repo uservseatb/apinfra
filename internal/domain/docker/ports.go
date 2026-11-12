@@ -8,6 +8,8 @@ import (
 // StackFileSystem persists proxy and per-app compose stacks on the host infra tree.
 type StackFileSystem interface {
 	WriteProxyCompose(content string) (changed bool, err error)
+	HasProxyApplyPending() (bool, error)
+	ClearProxyApplyPending() error
 	WriteAppStack(projectName, composeContent, envContent string) (changed bool, err error)
 	MarkApplyPending(projectName string) error
 	HasApplyPending(projectName string) (bool, error)

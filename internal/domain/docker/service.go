@@ -85,8 +85,8 @@ func NewService(
 // Apply writes the proxy stack and per-project stacks via StackFileSystem.
 // When applyContainers is false, only writes compose/.env files (no pull/up/down).
 // When applyContainers is true, starts stacks whose content changed, that have
-// .apply_pending, or that are not fully running (including deleted services),
-// sequentially, and downs disabled/removed apps.
+// .apply_pending (proxy or apps), or that are not fully running (including
+// deleted services), sequentially, and downs disabled/removed apps.
 func (s *Service) Apply(
 	ctx context.Context,
 	projects []Project,
@@ -107,7 +107,7 @@ func (s *Service) Apply(
 
 	var result ApplyResult
 
-	proxyChanged, err := s.writeProxyStack(ctx, projects)
+	proxyChanged, proxyPending, err := s.writeProxyStack(ctx, projects)
 	if err != nil {
 		return result, err
 	}
@@ -127,7 +127,15 @@ func (s *Service) Apply(
 	}
 
 	result, err = s.applyRunningStacks(
-		ctx, hostSettings, proxyChanged, enabled, stackChanged, applyPending, desiredServices, result.ProxyHosts,
+		ctx,
+		hostSettings,
+		proxyChanged,
+		proxyPending,
+		enabled,
+		stackChanged,
+		applyPending,
+		desiredServices,
+		result.ProxyHosts,
 	)
 	if err != nil {
 		return result, err
@@ -241,7 +249,7 @@ func (s *Service) writeAllAppStacks(
 func (s *Service) applyRunningStacks(
 	ctx context.Context,
 	hostSettings map[string]string,
-	proxyChanged bool,
+	proxyChanged, proxyPending bool,
 	enabled []string,
 	stackChanged, applyPending map[string]struct{},
 	desiredServices map[string]map[string]struct{},
@@ -256,7 +264,7 @@ func (s *Service) applyRunningStacks(
 
 	enabledSet := enabledNameSet(enabled)
 	appsToStart, needProxy, proxyRunning, proxyReady, containers := s.planStacksToStart(
-		ctx, proxyChanged, enabled, stackChanged, applyPending, desiredServices,
+		ctx, proxyChanged, proxyPending, enabled, stackChanged, applyPending, desiredServices,
 	)
 	result.ProxyRunning = proxyRunning
 	result.ProxyReady = proxyReady
@@ -266,7 +274,7 @@ func (s *Service) applyRunningStacks(
 		return result, err
 	}
 
-	logComposePlan(needProxy, proxyChanged, appsToStart, stackChanged, applyPending, appsToDown)
+	logComposePlan(needProxy, proxyChanged, proxyPending, appsToStart, stackChanged, applyPending, appsToDown)
 
 	if needProxy || len(appsToStart) > 0 {
 		err = s.dockerLogin(ctx, hostSettings)
@@ -277,7 +285,7 @@ func (s *Service) applyRunningStacks(
 
 	downed := s.downAppNames(ctx, appsToDown)
 
-	proxyStarted, appsRestarted, err := s.startProxyAndApps(ctx, proxyChanged, needProxy, appsToStart)
+	proxyStarted, appsRestarted, err := s.startProxyAndApps(ctx, proxyChanged, proxyPending, needProxy, appsToStart)
 	result.Restarted = proxyStarted || appsRestarted || downed
 
 	if proxyStarted {
@@ -290,7 +298,7 @@ func (s *Service) applyRunningStacks(
 }
 
 func logComposePlan(
-	needProxy, proxyChanged bool,
+	needProxy, proxyChanged, proxyPending bool,
 	appsToStart []string,
 	stackChanged, applyPending map[string]struct{},
 	appsToDown []string,
@@ -300,6 +308,8 @@ func logComposePlan(
 	switch {
 	case needProxy && proxyChanged:
 		proxyReason = "compose_changed"
+	case needProxy && proxyPending:
+		proxyReason = "apply_pending"
 	case needProxy:
 		proxyReason = "not_running"
 	default:
@@ -452,10 +462,10 @@ func appNameFromComposeProject(composeProject string) (string, bool) {
 
 func (s *Service) startProxyAndApps(
 	ctx context.Context,
-	proxyChanged, needProxy bool,
+	proxyChanged, proxyPending, needProxy bool,
 	appsToStart []string,
 ) (bool, bool, error) {
-	proxyStarted, err := s.startProxyIfNeeded(ctx, proxyChanged, needProxy)
+	proxyStarted, err := s.startProxyIfNeeded(ctx, proxyChanged, proxyPending, needProxy)
 	if err != nil {
 		return false, false, err
 	}
@@ -474,18 +484,17 @@ func enabledNameSet(enabled []string) map[string]struct{} {
 	return out
 }
 
-func (s *Service) startProxyIfNeeded(ctx context.Context, proxyChanged, needProxy bool) (bool, error) {
+func (s *Service) startProxyIfNeeded(
+	ctx context.Context,
+	proxyChanged, proxyPending, needProxy bool,
+) (bool, error) {
 	if !needProxy {
 		log.Printf("[docker] proxy compose unchanged and running, skipping compose up")
 
 		return false, nil
 	}
 
-	reason := "not running"
-	if proxyChanged {
-		reason = "compose changed"
-	}
-
+	reason := proxyStartReason(proxyChanged, proxyPending)
 	log.Printf("[docker] proxy will update (%s)", reason)
 
 	err := s.pullAndUpProxy(ctx)
@@ -496,15 +505,28 @@ func (s *Service) startProxyIfNeeded(ctx context.Context, proxyChanged, needProx
 	return true, nil
 }
 
+func proxyStartReason(proxyChanged, proxyPending bool) string {
+	switch {
+	case proxyChanged:
+		return "compose changed"
+	case proxyPending:
+		return "apply pending"
+	default:
+		return "not running"
+	}
+}
+
 func (s *Service) planStacksToStart(
 	ctx context.Context,
-	proxyChanged bool,
+	proxyChanged, proxyPending bool,
 	enabled []string,
 	stackChanged, applyPending map[string]struct{},
 	desiredServices map[string]map[string]struct{},
 ) ([]string, bool, bool, bool, []Container) {
 	listCtx, cancel := context.WithTimeout(ctx, s.timeouts.API)
 	defer cancel()
+
+	needProxyFromFiles := proxyChanged || proxyPending
 
 	containers, err := s.lister.ListContainers(listCtx)
 	if err != nil {
@@ -513,7 +535,7 @@ func (s *Service) planStacksToStart(
 			err,
 		)
 
-		return appsWithStackMarkers(enabled, stackChanged, applyPending), proxyChanged, false, false, nil
+		return appsWithStackMarkers(enabled, stackChanged, applyPending), needProxyFromFiles, false, false, nil
 	}
 
 	runningProjects := runningComposeProjects(containers, desiredServices)
@@ -521,7 +543,7 @@ func (s *Service) planStacksToStart(
 	proxyReady := proxyReadyAmong(containers)
 
 	return appsNeedingStart(enabled, stackChanged, applyPending, runningProjects),
-		proxyChanged || !proxyRunning,
+		needProxyFromFiles || !proxyRunning,
 		proxyRunning,
 		proxyReady,
 		containers
@@ -597,15 +619,15 @@ func (s *Service) startApps(ctx context.Context, appsToStart []string) (bool, er
 	return restarted, errors.Join(errs...)
 }
 
-func (s *Service) writeProxyStack(ctx context.Context, projects []Project) (bool, error) {
+func (s *Service) writeProxyStack(ctx context.Context, projects []Project) (bool, bool, error) {
 	baseTemplate, err := assets.LoadText("templates/docker-compose-app.tpl")
 	if err != nil {
-		return false, fmt.Errorf("load docker-compose template: %w", err)
+		return false, false, fmt.Errorf("load docker-compose template: %w", err)
 	}
 
 	composeProject, err := loadCompose(ctx, baseTemplate, "proxy", nil, loadMutate)
 	if err != nil {
-		return false, fmt.Errorf("parse docker-compose template: %w", err)
+		return false, false, fmt.Errorf("parse docker-compose template: %w", err)
 	}
 
 	configureProxy(composeProject, collectInboundPorts(projects))
@@ -614,15 +636,20 @@ func (s *Service) writeProxyStack(ctx context.Context, projects []Project) (bool
 
 	content, err := marshalCompose(composeProject)
 	if err != nil {
-		return false, fmt.Errorf("marshal proxy compose: %w", err)
+		return false, false, fmt.Errorf("marshal proxy compose: %w", err)
 	}
 
 	changed, err := s.fs.WriteProxyCompose(content)
 	if err != nil {
-		return false, fmt.Errorf("write proxy docker-compose.yml: %w", err)
+		return false, false, fmt.Errorf("write proxy docker-compose.yml: %w", err)
 	}
 
-	return changed, nil
+	pending, pendingErr := s.fs.HasProxyApplyPending()
+	if pendingErr != nil {
+		return false, false, fmt.Errorf("proxy apply pending: %w", pendingErr)
+	}
+
+	return changed, pending, nil
 }
 
 func (s *Service) writeAppStack(
@@ -755,6 +782,7 @@ func collectInboundPorts(projects []Project) []string {
 	return ports
 }
 
+// pullAndUpProxy clears infra/.apply_pending only after a successful up.
 func (s *Service) pullAndUpProxy(ctx context.Context) error {
 	log.Printf("[docker] pulling proxy images (timeout=%s)...", s.timeouts.ComposePull)
 
@@ -768,6 +796,11 @@ func (s *Service) pullAndUpProxy(ctx context.Context) error {
 	err = s.cli.ComposeUpProxy(ctx, s.timeouts.ComposeUp)
 	if err != nil {
 		return fmt.Errorf("docker compose up (proxy): %w", err)
+	}
+
+	clearErr := s.fs.ClearProxyApplyPending()
+	if clearErr != nil {
+		return fmt.Errorf("clear proxy apply pending: %w", clearErr)
 	}
 
 	log.Printf("[docker] proxy up ok")

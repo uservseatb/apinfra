@@ -183,6 +183,62 @@ func TestStackFS_WriteProxyCompose_IsIdempotent(t *testing.T) {
 	}
 }
 
+func TestStackFS_ProxyApplyPending_MarkBeforeWriteAndClear(t *testing.T) {
+	t.Parallel()
+
+	stack, infra := newStackFS(t)
+	pendingPath := filepath.Join(infra, ".apply_pending")
+
+	has, err := stack.HasProxyApplyPending()
+	if err != nil || has {
+		t.Fatalf("HasProxyApplyPending before write = %v, %v", has, err)
+	}
+
+	changed, err := stack.WriteProxyCompose(composeV1)
+	if err != nil || !changed {
+		t.Fatalf("first write: changed=%v err=%v", changed, err)
+	}
+
+	has, err = stack.HasProxyApplyPending()
+	if err != nil || !has {
+		t.Fatalf("content change must create pending: has=%v err=%v", has, err)
+	}
+
+	info, err := os.Stat(pendingPath)
+	if err != nil {
+		t.Fatalf("stat pending: %v", err)
+	}
+
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("pending mode = %v, want 0600", info.Mode().Perm())
+	}
+
+	changed, err = stack.WriteProxyCompose(composeV1)
+	if err != nil || changed {
+		t.Fatalf("identical write: changed=%v err=%v", changed, err)
+	}
+
+	has, err = stack.HasProxyApplyPending()
+	if err != nil || !has {
+		t.Fatalf("identical write must keep pending: has=%v err=%v", has, err)
+	}
+
+	err = stack.ClearProxyApplyPending()
+	if err != nil {
+		t.Fatalf("ClearProxyApplyPending: %v", err)
+	}
+
+	has, err = stack.HasProxyApplyPending()
+	if err != nil || has {
+		t.Fatalf("after clear HasProxyApplyPending = %v, %v", has, err)
+	}
+
+	err = stack.ClearProxyApplyPending()
+	if err != nil {
+		t.Fatalf("ClearProxyApplyPending idempotent: %v", err)
+	}
+}
+
 func TestStackFS_AppLifecycle(t *testing.T) {
 	t.Parallel()
 

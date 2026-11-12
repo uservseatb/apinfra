@@ -45,8 +45,21 @@ func NewStackFS(infraDir string) *StackFS {
 }
 
 // WriteProxyCompose writes infra/docker-compose.yml.
+// When content will change, infra/.apply_pending is written first.
 func (f *StackFS) WriteProxyCompose(content string) (bool, error) {
 	composePath := filepath.Join(f.infraDir, composeFileName)
+
+	orig, exists, err := readExistingFile(composePath)
+	if err != nil {
+		return false, fmt.Errorf("write proxy docker-compose.yml: %w", err)
+	}
+
+	if !exists || string(orig) != content {
+		err = markProxyApplyPending(f.infraDir)
+		if err != nil {
+			return false, err
+		}
+	}
 
 	changed, err := writeFile(composePath, content, fileModeReadable)
 	if err != nil {
@@ -54,6 +67,32 @@ func (f *StackFS) WriteProxyCompose(content string) (bool, error) {
 	}
 
 	return changed, nil
+}
+
+// HasProxyApplyPending reports whether infra/.apply_pending exists.
+func (f *StackFS) HasProxyApplyPending() (bool, error) {
+	pendingPath := proxyApplyPendingPath(f.infraDir)
+
+	_, err := os.Stat(pendingPath)
+	if err == nil {
+		return true, nil
+	}
+
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("stat %s: %w", pendingPath, err)
+}
+
+// ClearProxyApplyPending removes infra/.apply_pending after a successful proxy up.
+func (f *StackFS) ClearProxyApplyPending() error {
+	err := os.Remove(proxyApplyPendingPath(f.infraDir))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear proxy apply pending: %w", err)
+	}
+
+	return nil
 }
 
 // WriteAppStack writes apps/<name>/docker-compose.yml and .env.
@@ -236,6 +275,19 @@ func applyPendingPath(infraDirPath, projectName string) (string, error) {
 	}
 
 	return filepath.Join(appDir, applyPendingName), nil
+}
+
+func proxyApplyPendingPath(infraDirPath string) string {
+	return filepath.Join(infraDirPath, applyPendingName)
+}
+
+func markProxyApplyPending(infraDirPath string) error {
+	_, err := writeFile(proxyApplyPendingPath(infraDirPath), "", applyPendingMode)
+	if err != nil {
+		return fmt.Errorf("mark proxy apply pending: %w", err)
+	}
+
+	return nil
 }
 
 func appStackWouldChange(envPath, composePath, envContent, composeContent string) (bool, error) {
