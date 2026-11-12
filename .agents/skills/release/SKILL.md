@@ -51,11 +51,15 @@ Before tagging or building:
 
 ### Release Notes template
 
-Use this structure (adapt middle sections to the release: Features / Security / Bug Fixes / Improvements / Upgrade notes, etc.):
+Use this structure (adapt middle sections to the release: Features / Security / Bug Fixes / Improvements / Upgrade notes, etc.).
 
-```markdown
-## apinfra vX.Y.Z
+**Do not** start with `## apinfra vX.Y.Z` (or any title that repeats the version). GitHub / the chat already shows the version; notes begin with the summary sentence.
 
+**Chat presentation (required):** Release Notes contain a nested ` ```bash ` block. When wrapping notes for the user in a fenced code block, use a **4-backtick** outer fence (` ````markdown ` … ` ```` `), not triple backticks. A triple-backtick outer fence closes at the bash block’s closing ` ``` `, so the README footer line drops out of the code block and renders as live Markdown.
+
+Template body (what goes into the GitHub release / copy-paste block):
+
+````markdown
 One short summary sentence for the release.
 
 ### <emoji> <Section for this release>
@@ -77,9 +81,9 @@ sudo apt install -y ./apinfra_X.Y.Z_amd64.deb
 ```
 
 *For more details on configuration, check out the [README.md](https://github.com/uservseatb/apinfra/blob/main/README.md).*
-```
+````
 
-Always include **Asset** and **Installation** with the exact version in filenames and the GitHub download URL. Prefer listing the primary `.deb` the user installs (amd64); add arm64 when that package is part of the release.
+Always include **Asset** and **Installation** with the exact version in filenames and the GitHub download URL. Prefer listing the primary `.deb` the user installs (amd64); add arm64 when that package is part of the release. Keep the italic README footer **inside** the notes (after the install bash block).
 
 ## After confirmation: README bump → local tag + build
 
@@ -100,7 +104,7 @@ Always include **Asset** and **Installation** with the exact version in filename
    - **Do not** push the tag.
 
 4. **Final output for the user:**
-   - Print the final **Release Notes** in a clean, copy-pasteable Markdown code block.
+   - Print the final **Release Notes** in a clean, copy-pasteable Markdown code block using a **4-backtick** outer fence so the nested bash install block and the README footer stay inside the fence.
    - Remind them the tag is **local only**, list produced artifacts under `dist/`, and that they push / publish when ready.
 
 ## Safety rules

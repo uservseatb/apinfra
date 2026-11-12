@@ -107,7 +107,7 @@ Local-only release prep. Details: `release` skill (`.agents/skills/release/SKILL
 
 When the user asks for a release / new version / release notes, the agent must:
 
-1. Propose the next version (Conventional Commits) and show **Release Notes** in the project template (summary + change sections + **Asset** + **Installation** with versioned `.deb` curl/`apt` commands — see `release` skill).
+1. Propose the next version (Conventional Commits) and show **Release Notes** in the project template (see `release` skill): start with a summary sentence — **no** `## apinfra vX.Y.Z` title — then change sections + **Asset** + **Installation** with versioned `.deb` curl/`apt` commands, ending with the italic README footer. When wrapping notes in a chat code block, use a **4-backtick** outer fence so the nested `bash` install block does not close the fence early (otherwise the README line falls out of Markdown).
 2. Wait for explicit confirmation before tagging.
 3. After confirmation and **before** creating or pushing the new tag: bump the GitHub Releases `.deb` download URL in `README.md` → **Installation** (Option 1) to the confirmed version (e.g. `.../download/vX.Y.Z/apinfra_X.Y.Z_amd64.deb`). Commit that README change (message like `docs: bump install link to vX.Y.Z`) so the tag points at the updated install docs. Skip only if README already matches the confirmed version and is committed.
 4. Then create a **local** annotated git tag and build packages with GoReleaser into `dist/` (no publish).
