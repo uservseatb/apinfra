@@ -101,6 +101,27 @@ Do not commit binaries, coverage artifacts, or `vendor/` unless explicitly reque
 - Keep host templates in `build/deb/apinfra.example`, `build/deb/env.example`, and `build/deb/trusted_images.example` only (packaged into the .deb).
 - Validate untrusted input at trust boundaries.
 
+## Release Workflow
+
+Local-only release prep. Details: `release` skill (`.agents/skills/release/SKILL.md`).
+
+When the user asks for a release / new version / release notes, the agent must:
+
+1. Propose the next version (Conventional Commits) and show **Release Notes** in the project template (summary + change sections + **Asset** + **Installation** with versioned `.deb` curl/`apt` commands — see `release` skill).
+2. Wait for explicit confirmation before tagging.
+3. After confirmation and **before** creating or pushing the new tag: bump the GitHub Releases `.deb` download URL in `README.md` → **Installation** (Option 1) to the confirmed version (e.g. `.../download/vX.Y.Z/apinfra_X.Y.Z_amd64.deb`). Commit that README change (message like `docs: bump install link to vX.Y.Z`) so the tag points at the updated install docs. Skip only if README already matches the confirmed version and is committed.
+4. Then create a **local** annotated git tag and build packages with GoReleaser into `dist/` (no publish).
+5. Hand artifacts + notes back to the user.
+
+Hard limits for the agent:
+
+- Do **not** create git commits unless the user explicitly asks to commit — **exception:** the post-confirmation README install-link bump above is part of the confirmed release and must be committed before the tag.
+- Do **not** `git push` (branch, tags, or anything else).
+- Do **not** create/update a GitHub Release, open PRs, or dispatch GitHub Actions.
+- Do **not** publish via GoReleaser (`release.disable: true` / `--skip=publish`).
+
+The user pushes the tag/commits and uploads `.deb` / release assets themselves.
+
 ## Agent behavior
 
 - Change only what the task requires; no drive-by refactors.
