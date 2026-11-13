@@ -13,6 +13,7 @@ import (
 	"github.com/uservseatb/apinfra/internal/domain/deployment"
 	"github.com/uservseatb/apinfra/internal/events"
 	"github.com/uservseatb/apinfra/internal/git"
+	"github.com/uservseatb/apinfra/internal/sys"
 )
 
 const (
@@ -91,7 +92,7 @@ func (s *GitConfigSource) cloneAndReadSettings(
 	ctx context.Context,
 	namespace string,
 ) (*git.Repo, []config.ServiceConfig, error) {
-	log.Printf("[repo] config source repo=%s branch=%s", s.repoURL, s.repoBranch)
+	log.Printf("[repo] config source repo=%s branch=%s", sys.RedactURLUserinfo(s.repoURL), s.repoBranch)
 	log.Printf("[repo] loading in-memory clone (auth=%v)", s.repoToken != "")
 
 	cloneCtx, cancel := context.WithTimeout(ctx, s.gitTimeout)

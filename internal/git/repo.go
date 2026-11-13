@@ -15,6 +15,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/storage/memory"
+
+	"github.com/uservseatb/apinfra/internal/sys"
 )
 
 var (
@@ -92,15 +94,18 @@ func Load(ctx context.Context, opt LoadOptions) (*Repo, error) {
 
 	_, err = git.CloneContext(ctx, storer, worktree, cloneOpts)
 	if err != nil {
+		safeURL := sys.RedactURLUserinfo(url)
+		safeErr := sys.RedactURLUserinfo(err.Error())
+
 		switch {
 		case isBranchNotFound(err, branch):
-			return nil, fmt.Errorf("%w: %q in %s", errBranchNotFound, branch, url)
+			return nil, fmt.Errorf("%w: %q in %s", errBranchNotFound, branch, safeURL)
 		case isAuthError(err):
-			recordGitLoginFailed(opt.Events, url)
+			recordGitLoginFailed(opt.Events, safeURL)
 
-			return nil, fmt.Errorf("%w: clone %s: %w", errAuth, url, err)
+			return nil, fmt.Errorf("%w: clone %s: %s", errAuth, safeURL, safeErr)
 		default:
-			return nil, fmt.Errorf("clone %s: %w", url, err)
+			return nil, fmt.Errorf("clone %s: %s", safeURL, safeErr)
 		}
 	}
 

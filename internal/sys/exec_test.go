@@ -67,6 +67,11 @@ func TestCommandExecutor_Exec_RedactsURLCredentialsInError(t *testing.T) {
 			wantInfo: "https://***@one.test/x ssh://***@two.test/y",
 		},
 		{
+			name:     "cli_password_flag",
+			args:     []string{"false", "--password=" + secret},
+			wantInfo: "--password=***",
+		},
+		{
 			name:     "url_without_userinfo_untouched",
 			args:     []string{"false", "https://github.com/o/r.git"},
 			wantInfo: "https://github.com/o/r.git",
@@ -95,6 +100,32 @@ func TestCommandExecutor_Exec_RedactsURLCredentialsInError(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tcase.wantInfo)
 			}
 		})
+	}
+}
+
+func TestCommandExecutor_Exec_RedactsReturnedStdoutStderr(t *testing.T) {
+	t.Parallel()
+
+	const secret = "s3cr3t"
+
+	stdout, stderr, err := newTestExecutor(t).Exec(
+		testContext(t),
+		shellBin, "-c", `echo "https://bob:`+secret+`@github.com/x"; echo "lookup ghp_`+secret+`: no such host" >&2`,
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	if strings.Contains(stdout, secret) || strings.Contains(stderr, secret) {
+		t.Fatalf("secret leaked: stdout=%q stderr=%q", stdout, stderr)
+	}
+
+	if !strings.Contains(stdout, "https://***@github.com/x") {
+		t.Fatalf("stdout = %q, want redacted URL", stdout)
+	}
+
+	if !strings.Contains(stderr, "lookup ***: no such host") {
+		t.Fatalf("stderr = %q, want redacted DNS line", stderr)
 	}
 }
 

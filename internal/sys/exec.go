@@ -77,8 +77,8 @@ func (e *CommandExecutor) execContext(ctx context.Context, stdin string, args ..
 	cmd.Stderr = &errBuf
 
 	runErr := cmd.Run()
-	stdout := strings.TrimSpace(outBuf.String())
-	stderr := stripLogrusWarnings(errBuf.String())
+	stdout := redactSecrets(strings.TrimSpace(outBuf.String()))
+	stderr := redactSecrets(stripLogrusWarnings(errBuf.String()))
 
 	e.logExecOutput(stdout, stderr)
 
@@ -92,21 +92,39 @@ func (e *CommandExecutor) execContext(ctx context.Context, stdin string, args ..
 }
 
 // formatExecError keeps runErr in the chain; on deadline also joins errTimeout and
-// context.DeadlineExceeded so callers can errors.Is either.
+// context.DeadlineExceeded so callers can errors.Is either. Non-ExitError messages
+// are redacted so secrets in err.Error() do not surface to callers.
 func formatExecError(safeCmd string, runErr, ctxErr error) error {
+	chain := runErr
 	if errors.Is(ctxErr, context.DeadlineExceeded) {
-		return fmt.Errorf("%s: %w", safeCmd, errors.Join(errTimeout, context.DeadlineExceeded, runErr))
+		chain = errors.Join(errTimeout, context.DeadlineExceeded, runErr)
 	}
 
-	return fmt.Errorf("%s: %w", safeCmd, runErr)
+	if _, ok := errors.AsType[*exec.ExitError](runErr); ok {
+		return fmt.Errorf("%s: %w", safeCmd, chain)
+	}
+
+	return &redactedError{
+		msg: safeCmd + ": " + redactSecrets(runErr.Error()),
+		err: chain,
+	}
 }
+
+// redactedError exposes a scrubbed Error() while preserving Unwrap for errors.Is/As.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
 
 func (e *CommandExecutor) logExecOutput(stdout, stderr string) {
 	if !e.UseExecLogs {
 		return
 	}
 
-	safeOut, safeErr := oneLine(redactSecrets(stdout)), oneLine(redactSecrets(stderr))
+	safeOut, safeErr := oneLine(stdout), oneLine(stderr)
 	if safeOut != "" {
 		log.Printf("[exec stdout] %s", safeOut)
 	}
@@ -117,11 +135,13 @@ func (e *CommandExecutor) logExecOutput(stdout, stderr string) {
 }
 
 func (e *CommandExecutor) logExecFailure(safeCmd string, runErr error, stderr string) {
-	safeErr := oneLine(redactSecrets(stderr))
+	safeRun := redactSecrets(runErr.Error())
+	safeErr := oneLine(stderr)
+
 	if safeErr != "" {
-		log.Printf("[exec] FAIL workdir=%s cmd=%s err=%v stderr=%s", e.WorkDir, safeCmd, runErr, safeErr)
+		log.Printf("[exec] FAIL workdir=%s cmd=%s err=%s stderr=%s", e.WorkDir, safeCmd, safeRun, safeErr)
 	} else {
-		log.Printf("[exec] FAIL workdir=%s cmd=%s err=%v", e.WorkDir, safeCmd, runErr)
+		log.Printf("[exec] FAIL workdir=%s cmd=%s err=%s", e.WorkDir, safeCmd, safeRun)
 	}
 }
 
@@ -154,54 +174,4 @@ func oneLine(input string) string {
 	fields := strings.Fields(input)
 
 	return strings.Join(fields, " ")
-}
-
-// redactSecrets hides credentials embedded in URLs anywhere in s
-// (e.g. https://token@host/... or https://user:pass@host/...).
-func redactSecrets(input string) string {
-	const marker = "://"
-
-	var builder strings.Builder
-
-	remaining := input
-
-	for {
-		idx := strings.Index(remaining, marker)
-		if idx < 0 {
-			builder.WriteString(remaining)
-
-			break
-		}
-
-		builder.WriteString(remaining[:idx+len(marker)])
-		rest := remaining[idx+len(marker):]
-		endAuth := len(rest)
-
-		for _, sep := range []byte{'/', ' ', '\n', '\t', '\'', '"'} {
-			if j := strings.IndexByte(rest, sep); j >= 0 && j < endAuth {
-				endAuth = j
-			}
-		}
-
-		// userinfo@host — take the last '@' inside the authority.
-		lastAt := -1
-
-		for j := range endAuth {
-			if rest[j] == '@' {
-				lastAt = j
-			}
-		}
-
-		if lastAt >= 0 {
-			builder.WriteString("***@")
-
-			remaining = rest[lastAt+1:]
-
-			continue
-		}
-
-		remaining = rest
-	}
-
-	return builder.String()
 }

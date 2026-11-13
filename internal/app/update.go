@@ -42,7 +42,7 @@ func RunUpdate(ctx context.Context, version string) error {
 		version,
 		cfg.InfraDirPath,
 		cfg.Namespace,
-		cfg.RepoURL,
+		sys.RedactURLUserinfo(cfg.RepoURL),
 	)
 
 	started := time.Now()
@@ -135,7 +135,10 @@ func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
 
 	err := gitopsService.ExecuteUpdateCycle(ctx)
 	if err != nil {
-		log.Printf("[update] WARN cycle finished with errors (soft-fail, will retry):\n%v", err)
+		log.Printf(
+			"[update] WARN cycle finished with errors (soft-fail, will retry):\n%s",
+			sys.RedactURLUserinfo(err.Error()),
+		)
 	}
 }
 
