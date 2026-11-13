@@ -3,6 +3,7 @@ package acme
 import (
 	"context"
 	"crypto"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/providers/http/webroot"
 	"github.com/go-acme/lego/v4/registration"
+	"github.com/uservseatb/apinfra/internal/certstore"
 )
 
 const (
@@ -53,7 +55,8 @@ func (u *acmeUser) GetPrivateKey() crypto.PrivateKey {
 func obtainCert(
 	ctx context.Context,
 	files fileWriter,
-	infraDirPath, domainName, email, mode string,
+	accounts *certstore.Store,
+	infraDirPath, domainName, email, mode, providerID string,
 	acmeTimeout time.Duration,
 	prov provider,
 ) error {
@@ -77,7 +80,9 @@ func obtainCert(
 		return fmt.Errorf("mkdir webroot: %w", err)
 	}
 
-	user, err := loadOrCreateUser(files, infraDirPath, email, caURL)
+	accountKey := acmeAccountKey(providerID, mode, email)
+
+	user, err := loadOrCreateUser(files, accounts, infraDirPath, email, caURL, accountKey)
 	if err != nil {
 		return err
 	}
@@ -85,7 +90,9 @@ func obtainCert(
 	var certs *certificate.Resource
 
 	err = runWithTimeout(ctx, acmeTimeout, func() error {
-		obtained, obtainErr := obtainResource(files, user, caURL, webrootPath, infraDirPath, domainName, acmeTimeout, prov)
+		obtained, obtainErr := obtainResource(
+			files, accounts, user, caURL, webrootPath, infraDirPath, domainName, accountKey, acmeTimeout, prov,
+		)
 		if obtainErr != nil {
 			return obtainErr
 		}
@@ -107,8 +114,9 @@ func obtainCert(
 
 func obtainResource(
 	files fileWriter,
+	accounts *certstore.Store,
 	user *acmeUser,
-	caURL, webrootPath, infraDirPath, domainName string,
+	caURL, webrootPath, infraDirPath, domainName, accountKey string,
 	acmeTimeout time.Duration,
 	prov provider,
 ) (*certificate.Resource, error) {
@@ -117,7 +125,7 @@ func obtainResource(
 		return nil, err
 	}
 
-	err = ensureRegistration(files, client, user, infraDirPath, caURL, prov)
+	err = ensureRegistration(files, accounts, client, user, infraDirPath, caURL, accountKey, prov)
 	if err != nil {
 		return nil, err
 	}
@@ -276,9 +284,10 @@ func applyObtainHTTPTimeout(cfg *lego.Config, acmeTimeout time.Duration) {
 
 func ensureRegistration(
 	files fileWriter,
+	accounts *certstore.Store,
 	client *lego.Client,
 	user *acmeUser,
-	infraDirPath, caURL string,
+	infraDirPath, caURL, accountKey string,
 	prov provider,
 ) error {
 	if user.registration != nil {
@@ -295,10 +304,25 @@ func ensureRegistration(
 
 	user.registration = reg
 
-	return saveUser(files, infraDirPath, user, caURL)
+	return saveUser(files, accounts, infraDirPath, user, caURL, accountKey)
 }
 
-func loadOrCreateUser(files fileWriter, infraDirPath, email, caURL string) (*acmeUser, error) {
+func loadOrCreateUser(
+	files fileWriter,
+	accounts *certstore.Store,
+	infraDirPath, email, caURL, accountKey string,
+) (*acmeUser, error) {
+	if accounts != nil {
+		user, ok, err := loadUserFromStore(accounts, email, accountKey)
+		if err != nil {
+			return nil, err
+		}
+
+		if ok {
+			return user, nil
+		}
+	}
+
 	dir := accountDir(infraDirPath, email, caURL)
 	keyPath := filepath.Join(dir, accountKeyFile)
 	regPath := filepath.Join(dir, accountRegFile)
@@ -309,7 +333,7 @@ func loadOrCreateUser(files fileWriter, infraDirPath, email, caURL string) (*acm
 			return nil, fmt.Errorf("read ACME account key: %w", err)
 		}
 
-		return createUser(files, infraDirPath, email, caURL)
+		return createUser(files, accounts, infraDirPath, email, caURL, accountKey)
 	}
 
 	key, err := certcrypto.ParsePEMPrivateKey(keyPEM)
@@ -322,6 +346,8 @@ func loadOrCreateUser(files fileWriter, infraDirPath, email, caURL string) (*acm
 	regJSON, err := os.ReadFile(regPath) // #nosec G304 -- path under infraDirPath
 	if err != nil {
 		if os.IsNotExist(err) {
+			_ = saveUser(files, accounts, infraDirPath, user, caURL, accountKey)
+
 			return user, nil
 		}
 
@@ -337,10 +363,41 @@ func loadOrCreateUser(files fileWriter, infraDirPath, email, caURL string) (*acm
 
 	user.registration = &reg
 
+	// One-shot migrate legacy disk account into ~/.certs.json.
+	_ = saveUser(files, accounts, infraDirPath, user, caURL, accountKey)
+
 	return user, nil
 }
 
-func createUser(files fileWriter, infraDirPath, email, caURL string) (*acmeUser, error) {
+func loadUserFromStore(accounts *certstore.Store, email, accountKey string) (*acmeUser, bool, error) {
+	acc, ok, err := accounts.GetAccount(accountKey)
+	if err != nil {
+		return nil, false, fmt.Errorf("load ACME account %s: %w", accountKey, err)
+	}
+
+	if !ok {
+		return nil, false, nil
+	}
+
+	keyPEM, err := base64.StdEncoding.DecodeString(acc.PrivateKey)
+	if err != nil {
+		return nil, false, fmt.Errorf("decode ACME account key: %w", err)
+	}
+
+	key, err := certcrypto.ParsePEMPrivateKey(keyPEM)
+	if err != nil {
+		return nil, false, fmt.Errorf("parse ACME account key: %w", err)
+	}
+
+	// Leave registration nil so ensureRegistration can ResolveAccountByKey.
+	return &acmeUser{email: email, key: key, registration: nil}, true, nil
+}
+
+func createUser(
+	files fileWriter,
+	accounts *certstore.Store,
+	infraDirPath, email, caURL, accountKey string,
+) (*acmeUser, error) {
 	key, err := certcrypto.GeneratePrivateKey(certcrypto.EC256)
 	if err != nil {
 		return nil, fmt.Errorf("generate ACME account key: %w", err)
@@ -348,7 +405,7 @@ func createUser(files fileWriter, infraDirPath, email, caURL string) (*acmeUser,
 
 	user := &acmeUser{email: email, key: key, registration: nil}
 
-	err = saveUser(files, infraDirPath, user, caURL)
+	err = saveUser(files, accounts, infraDirPath, user, caURL, accountKey)
 	if err != nil {
 		return nil, err
 	}
@@ -356,15 +413,39 @@ func createUser(files fileWriter, infraDirPath, email, caURL string) (*acmeUser,
 	return user, nil
 }
 
-func saveUser(files fileWriter, infraDirPath string, user *acmeUser, caURL string) error {
+func saveUser(
+	files fileWriter,
+	accounts *certstore.Store,
+	infraDirPath string,
+	user *acmeUser,
+	caURL, accountKey string,
+) error {
+	keyPEM := certcrypto.PEMEncode(user.key)
+
+	if accounts != nil && accountKey != "" {
+		uri := ""
+		if user.registration != nil {
+			uri = user.registration.URI
+		}
+
+		err := accounts.PutAccount(accountKey, certstore.Account{
+			Email:      user.email,
+			URI:        uri,
+			PrivateKey: base64.StdEncoding.EncodeToString(keyPEM),
+		})
+		if err != nil {
+			return fmt.Errorf("persist ACME account: %w", err)
+		}
+
+		return nil
+	}
+
 	dir := accountDir(infraDirPath, user.email, caURL)
 
 	err := os.MkdirAll(dir, dirModeTraversable)
 	if err != nil { // #nosec G301
 		return fmt.Errorf("mkdir ACME account dir: %w", err)
 	}
-
-	keyPEM := certcrypto.PEMEncode(user.key)
 
 	_, err = files.WriteFile(filepath.Join(dir, accountKeyFile), string(keyPEM), fileModePrivate)
 	if err != nil {
@@ -386,6 +467,19 @@ func saveUser(files fileWriter, infraDirPath string, user *acmeUser, caURL strin
 	}
 
 	return nil
+}
+
+func acmeAccountKey(providerID, mode, email string) string {
+	kind := ModeProd
+	if providerID == providerLetsEncrypt && mode == ModeTest {
+		kind = ModeTest
+	}
+
+	if providerID == "" {
+		providerID = providerLetsEncrypt
+	}
+
+	return certstore.AccountKey(providerID, kind, email)
 }
 
 func accountDir(infraDirPath, email, caURL string) string {

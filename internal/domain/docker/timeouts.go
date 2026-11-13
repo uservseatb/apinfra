@@ -9,6 +9,7 @@ const (
 	defaultComposeDownTimeout = 2 * time.Minute
 	defaultPruneTimeout       = 2 * time.Minute
 	defaultAPITimeout         = 30 * time.Second
+	defaultProxyReadyAfter    = 30 * time.Second
 )
 
 func (t ApplyTimeouts) withDefaults() ApplyTimeouts {
@@ -35,6 +36,10 @@ func (t ApplyTimeouts) withDefaults() ApplyTimeouts {
 
 	if out.API <= 0 {
 		out.API = defaultAPITimeout
+	}
+
+	if out.ProxyReadyAfter <= 0 {
+		out.ProxyReadyAfter = defaultProxyReadyAfter
 	}
 
 	return out

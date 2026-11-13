@@ -47,6 +47,7 @@ linters:
             - crypto/x509
             - crypto/x509/pkix
             - embed
+            - encoding/base64
             - encoding/json
             - encoding/pem
             - errors
@@ -83,6 +84,7 @@ linters:
       case:
         rules:
           yaml: snake
+          json: snake
     varnamelen:
       min-name-length: 3
       ignore-names:

@@ -10,13 +10,11 @@ import (
 	"time"
 
 	"github.com/uservseatb/apinfra/internal/assets"
+	"github.com/uservseatb/apinfra/internal/certstore"
 	"github.com/uservseatb/apinfra/internal/domain/nginx"
-	"github.com/uservseatb/apinfra/internal/sys"
 )
 
 const (
-	certsConfigFile   = ".installedCert"
-	certTimeLayout    = "2006-01-02T15:04:05.000"
 	certIssueMock     = "mock"
 	certIssueProd     = "prod"
 	legacyAppConf     = "app.conf"
@@ -30,11 +28,20 @@ var errNginxHostIsDir = errors.New("nginx host path is a directory (expected fil
 // VhostFS implements nginx.IngressFileSystem for the host infra tree.
 type VhostFS struct {
 	infraDir string
+	certs    *certstore.Store
 }
 
 // NewVhostFS builds a VhostFS rooted at infraDir.
 func NewVhostFS(infraDir string) *VhostFS {
-	return &VhostFS{infraDir: infraDir}
+	return &VhostFS{
+		infraDir: infraDir,
+		certs:    certstore.New(infraDir),
+	}
+}
+
+// CertStore returns the shared ~/.certs.json store.
+func (f *VhostFS) CertStore() *certstore.Store {
+	return f.certs
 }
 
 // EnsureHostFiles writes bind-mounted nginx files and verifies they are regular files.
@@ -351,60 +358,71 @@ func (f *VhostFS) RemoveCertMaterial(domain string) {
 	}
 }
 
-// LoadInstalledCerts reads .installedCert.
+// LoadInstalledCerts reads certificate statuses from ~/.certs.json.
 func (f *VhostFS) LoadInstalledCerts() ([]nginx.CertDescriptor, error) {
-	cfgPath := certConfigFilePath(f.infraDir)
-
-	props, err := readProperties(cfgPath)
+	statuses, err := f.certs.ListStatuses()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-
-		return nil, err
+		return nil, fmt.Errorf("list cert statuses: %w", err)
 	}
 
-	res := make([]nginx.CertDescriptor, 0, len(props))
+	if len(statuses) == 0 {
+		return nil, nil
+	}
 
-	var parseErrs []error
-
-	for key, val := range props {
-		parsed, mode, parseErr := parseCertValue(val)
-		if parseErr != nil {
-			parseErrs = append(parseErrs, fmt.Errorf("domain %s: %w", key, parseErr))
-
-			continue
-		}
-
+	res := make([]nginx.CertDescriptor, 0, len(statuses))
+	for _, st := range statuses {
 		res = append(res, nginx.CertDescriptor{
-			DomainName:    key,
-			IssueDateTime: parsed,
-			Mode:          mode,
+			DomainName:    st.DomainName,
+			IssueDateTime: st.IssueDateTime,
+			Mode:          st.Mode,
 		})
-	}
-
-	if len(parseErrs) > 0 {
-		return nil, fmt.Errorf("parse %s: %w", cfgPath, errors.Join(parseErrs...))
 	}
 
 	return res, nil
 }
 
-// SaveInstalledCerts writes .installedCert.
+// SaveInstalledCerts writes certificate statuses to ~/.certs.json (keeps prod PEM cache).
 func (f *VhostFS) SaveInstalledCerts(certs []nginx.CertDescriptor) (bool, error) {
-	var builder strings.Builder
-
-	for i, cert := range certs {
-		if i > 0 {
-			builder.WriteByte('\n')
-		}
-
-		builder.WriteString(cert.DomainName)
-		builder.WriteByte('=')
-		builder.WriteString(formatCertValue(cert))
+	statuses := make([]certstore.Status, 0, len(certs))
+	for _, cert := range certs {
+		statuses = append(statuses, certstore.Status{
+			DomainName:    cert.DomainName,
+			IssueDateTime: cert.IssueDateTime,
+			Mode:          cert.Mode,
+		})
 	}
 
-	return writeFile(certConfigFilePath(f.infraDir), builder.String(), fileModeReadable)
+	changed, err := f.certs.SaveStatuses(statuses, time.Now().UTC())
+	if err != nil {
+		return false, fmt.Errorf("save cert statuses: %w", err)
+	}
+
+	return changed, nil
+}
+
+// ProdCertUsable reports whether ~/.certs.json has a still-valid prod PEM cache (soft TTL).
+func (f *VhostFS) ProdCertUsable(domain string, updateSec int64, now time.Time) bool {
+	return f.certs.ProdReusable(domain, updateSec, now)
+}
+
+// MaterializeProdCert restores cached prod PEMs to live/ when soft TTL allows.
+func (f *VhostFS) MaterializeProdCert(domain string, updateSec int64, now time.Time) (bool, error) {
+	ok, err := f.certs.MaterializeProd(domain, updateSec, now)
+	if err != nil {
+		return false, fmt.Errorf("materialize prod cert: %w", err)
+	}
+
+	return ok, nil
+}
+
+// PutProdCertMaterialFromDisk caches live/ PEMs into ~/.certs.json after a prod issue.
+func (f *VhostFS) PutProdCertMaterialFromDisk(domain, provider string) error {
+	err := f.certs.PutProdMaterialFromDisk(domain, provider)
+	if err != nil {
+		return fmt.Errorf("cache prod cert material: %w", err)
+	}
+
+	return nil
 }
 
 func (f *VhostFS) nginxDir() string {
@@ -440,50 +458,6 @@ func certHostDir(infraDirPath, domainName, mode string) string {
 	}
 
 	return filepath.Join(infraDirPath, "certbot", "conf", "live", domainName)
-}
-
-func certConfigFilePath(infraDirPath string) string {
-	return filepath.Join(filepath.Dir(filepath.Clean(infraDirPath)), certsConfigFile)
-}
-
-func formatCertValue(cert nginx.CertDescriptor) string {
-	timeStr := cert.IssueDateTime.UTC().Format(certTimeLayout)
-	if cert.Mode == "" {
-		return timeStr
-	}
-
-	return timeStr + "|" + cert.Mode
-}
-
-func parseCertValue(v string) (time.Time, string, error) {
-	mode := ""
-
-	timePart := v
-	if part, rest, ok := strings.Cut(v, "|"); ok {
-		timePart = part
-		mode = strings.TrimSpace(rest)
-	}
-
-	parsed, err := time.Parse(certTimeLayout, strings.TrimSpace(timePart))
-	if err != nil {
-		return time.Time{}, "", fmt.Errorf("parse cert time: %w", err)
-	}
-
-	return parsed, mode, nil
-}
-
-func readProperties(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- .installedCert under host layout
-	if err != nil {
-		return nil, fmt.Errorf("open properties %s: %w", path, err)
-	}
-
-	props, err := sys.ParsePropertiesString(string(data))
-	if err != nil {
-		return nil, fmt.Errorf("parse properties %s: %w", path, err)
-	}
-
-	return props, nil
 }
 
 func dropCertStash(stash string) {

@@ -3,9 +3,16 @@ package nginx_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uservseatb/apinfra/internal/certstore"
 	"github.com/uservseatb/apinfra/internal/domain/certmanagement"
 	"github.com/uservseatb/apinfra/internal/domain/nginx"
 	"github.com/uservseatb/apinfra/internal/events"
@@ -112,16 +120,55 @@ func (f *fakeAcme) Issue(_ context.Context, domain, _, mode string, _ time.Durat
 		return certmanagement.CertPaths{}, fmt.Errorf("mkdir: %w", err)
 	}
 
-	for _, name := range []string{"fullchain.pem", "privkey.pem"} {
-		err = os.WriteFile(filepath.Join(dir, name), []byte("pem-"+mode), 0o600)
-		if err != nil {
-			return certmanagement.CertPaths{}, fmt.Errorf("write pem: %w", err)
-		}
+	fullchain, privkey, pemErr := testIssuePEMs(domain)
+	if pemErr != nil {
+		return certmanagement.CertPaths{}, pemErr
+	}
+
+	err = os.WriteFile(filepath.Join(dir, "fullchain.pem"), fullchain, 0o600)
+	if err != nil {
+		return certmanagement.CertPaths{}, fmt.Errorf("write fullchain: %w", err)
+	}
+
+	err = os.WriteFile(filepath.Join(dir, "privkey.pem"), privkey, 0o600)
+	if err != nil {
+		return certmanagement.CertPaths{}, fmt.Errorf("write privkey: %w", err)
+	}
+
+	err = os.WriteFile(filepath.Join(dir, ".issued-mode"), []byte(mode+"\n"), 0o600)
+	if err != nil {
+		return certmanagement.CertPaths{}, fmt.Errorf("write issued-mode: %w", err)
 	}
 
 	f.issued[domain] = mode
 
 	return f.PathsFor(domain, mode), nil
+}
+
+func testIssuePEMs(domain string) ([]byte, []byte, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate key: %w", err)
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: domain},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
+		DNSNames:     []string{domain},
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create cert: %w", err)
+	}
+
+	fullchain := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	privkey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+
+	return fullchain, privkey, nil
 }
 
 func (f *fakeAcme) IssueSecondary(
@@ -238,28 +285,78 @@ func (e *routeEnv) homeFile(t *testing.T, name string) (string, bool) {
 	return string(data), true
 }
 
-// installed parses .installedCert into domain -> mode.
+// installed parses ~/.certs.json into domain -> active_mode.
 func (e *routeEnv) installed(t *testing.T) map[string]string {
 	t.Helper()
 
 	out := map[string]string{}
 
-	raw, ok := e.homeFile(t, ".installedCert")
+	raw, ok := e.homeFile(t, certstore.FileName)
 	if !ok {
 		return out
 	}
 
-	for line := range strings.SplitSeq(raw, "\n") {
-		domain, rest, found := strings.Cut(strings.TrimSpace(line), "=")
-		if !found {
-			continue
+	var doc struct {
+		Certificates map[string]struct {
+			ActiveMode string `json:"active_mode"`
+			Mode       string `json:"mode"` // v1 compat
+		} `json:"certificates"`
+	}
+
+	err := json.Unmarshal([]byte(raw), &doc)
+	if err != nil {
+		t.Fatalf("parse %s: %v", certstore.FileName, err)
+	}
+
+	for domain, entry := range doc.Certificates {
+		mode := entry.ActiveMode
+		if mode == "" {
+			mode = entry.Mode
 		}
 
-		_, mode, _ := strings.Cut(rest, "|")
 		out[domain] = mode
 	}
 
 	return out
+}
+
+func (e *routeEnv) writeCertStatus(t *testing.T, mode, issuedAt string) {
+	t.Helper()
+
+	issued, err := time.Parse(certmanagement.CertTimeLayout, issuedAt)
+	if err != nil {
+		t.Fatalf("parse issuedAt: %v", err)
+	}
+
+	store := certstore.New(e.infra)
+
+	_, err = store.SaveStatuses([]certstore.Status{{
+		DomainName:    domainApp,
+		IssueDateTime: issued.UTC(),
+		Mode:          mode,
+	}}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("SaveStatuses: %v", err)
+	}
+}
+
+func (e *routeEnv) certIssuedAt(t *testing.T, domain string) time.Time {
+	t.Helper()
+
+	statuses, err := certstore.New(e.infra).ListStatuses()
+	if err != nil {
+		t.Fatalf("ListStatuses: %v", err)
+	}
+
+	for _, st := range statuses {
+		if st.DomainName == domain {
+			return st.IssueDateTime
+		}
+	}
+
+	t.Fatalf("domain %s missing from %s", domain, certstore.FileName)
+
+	return time.Time{}
 }
 
 func (e *routeEnv) fileExists(rel string) bool {
@@ -645,7 +742,7 @@ func TestProcessRouting_DNSPreflight(t *testing.T) {
 				t.Fatalf("CA called = %v, want %v", issued, tcase.wantIssued)
 			}
 
-			for _, name := range []string{".retries", ".downgradeCertMode", ".installedCert"} {
+			for _, name := range []string{".retries", ".downgradeCertMode", certstore.FileName} {
 				_, exists := env.homeFile(t, name)
 				if exists && !tcase.wantIssued {
 					t.Fatalf("%s must not be written when DNS preflight fails", name)
@@ -817,19 +914,24 @@ func TestProcessRouting_NoneKeepsPreviousIssueTime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = os.WriteFile(filepath.Join(env.home, ".installedCert"), []byte(domainApp+"="+issuedAt+"|prod"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	env.writeCertStatus(t, "prod", issuedAt)
 
 	err = env.runLive(domainProject("none"))
 	if err != nil {
 		t.Fatalf("ProcessRouting: %v", err)
 	}
 
-	raw, _ := env.homeFile(t, ".installedCert")
-	if strings.TrimSpace(raw) != domainApp+"="+issuedAt+"|none" {
-		t.Fatalf(".installedCert = %q, want issue time preserved with mode none", raw)
+	if got := env.installed(t)[domainApp]; got != "none" {
+		t.Fatalf("mode = %q, want none", got)
+	}
+
+	wantIssued, err := time.Parse(certmanagement.CertTimeLayout, issuedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := env.certIssuedAt(t, domainApp); !got.Equal(wantIssued.UTC()) {
+		t.Fatalf("issued_at = %v, want preserved %v", got, wantIssued.UTC())
 	}
 }
 
@@ -888,12 +990,9 @@ func TestProcessRouting_ExpiredCertIsReissued(t *testing.T) {
 		t.Fatalf("cycle 1: %v", err)
 	}
 
-	old := time.Now().UTC().Add(-2 * certUpdateSec * time.Second).Format(certmanagement.CertTimeLayout)
-
-	err = os.WriteFile(filepath.Join(env.home, ".installedCert"), []byte(domainApp+"="+old+"|mock"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	oldTime := time.Now().UTC().Add(-2 * certUpdateSec * time.Second)
+	old := oldTime.Format(certmanagement.CertTimeLayout)
+	env.writeCertStatus(t, "mock", old)
 
 	err = env.runLive(project)
 	if err != nil {
@@ -904,9 +1003,8 @@ func TestProcessRouting_ExpiredCertIsReissued(t *testing.T) {
 		t.Fatalf("acme calls = %v, want a reissue after expiry", env.acme.calls)
 	}
 
-	raw, _ := env.homeFile(t, ".installedCert")
-	if strings.Contains(raw, old) {
-		t.Fatalf(".installedCert must carry the new issue time: %s", raw)
+	if got := env.certIssuedAt(t, domainApp); !got.After(oldTime) {
+		t.Fatalf("issued_at = %v, want newer than %v", got, oldTime)
 	}
 }
 
@@ -929,11 +1027,7 @@ func TestProcessRouting_FailedReissueKeepsExistingCertMaterial(t *testing.T) {
 	}
 
 	expired := time.Now().UTC().Add(-2 * certUpdateSec * time.Second).Format(certmanagement.CertTimeLayout)
-
-	err = os.WriteFile(filepath.Join(env.home, ".installedCert"), []byte(domainApp+"="+expired+"|mock"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	env.writeCertStatus(t, "mock", expired)
 
 	env.acme.fail = func(string) error { return errTestBoom }
 
@@ -949,6 +1043,137 @@ func TestProcessRouting_FailedReissueKeepsExistingCertMaterial(t *testing.T) {
 
 	if env.fileExists("mockcerts/app.example.com.reissue") {
 		t.Fatal("reissue stash must not be left behind")
+	}
+}
+
+func TestProcessRouting_ProdModeSwitchRestoresFromCertsJSON(t *testing.T) {
+	t.Parallel()
+
+	env := newRouteEnv(t)
+
+	err := env.runLive(domainProject("prod"))
+	if err != nil {
+		t.Fatalf("cycle prod: %v", err)
+	}
+
+	prodPEM, err := os.ReadFile(filepath.Join(certDir(env.infra, domainApp, "prod"), "fullchain.pem"))
+	if err != nil {
+		t.Fatalf("read prod pem: %v", err)
+	}
+
+	err = env.runLive(domainProject("test"))
+	if err != nil {
+		t.Fatalf("cycle test: %v", err)
+	}
+
+	if got := env.installed(t)[domainApp]; got != "test" {
+		t.Fatalf("mode after test = %q", got)
+	}
+
+	testPEM, err := os.ReadFile(filepath.Join(certDir(env.infra, domainApp, "test"), "fullchain.pem"))
+	if err != nil {
+		t.Fatalf("read test pem: %v", err)
+	}
+
+	if string(testPEM) == string(prodPEM) {
+		t.Fatal("test cycle must overwrite live PEMs")
+	}
+
+	store := certstore.New(env.infra)
+
+	prodIssued, ok, err := store.ProdIssuedAt(domainApp)
+	if err != nil || !ok {
+		t.Fatalf("ProdIssuedAt after test: ok=%v err=%v", ok, err)
+	}
+
+	if !store.ProdReusable(domainApp, certUpdateSec, time.Now().UTC()) {
+		t.Fatal("prod PEM cache must survive mode=test")
+	}
+
+	err = env.runLive(domainProject("prod"))
+	if err != nil {
+		t.Fatalf("cycle prod restore: %v", err)
+	}
+
+	if want := []string{domainApp + ":prod", domainApp + ":test"}; !equalStrings(env.acme.calls, want) {
+		t.Fatalf("acme calls = %v, want restore without second prod issue", env.acme.calls)
+	}
+
+	restored, err := os.ReadFile(filepath.Join(certDir(env.infra, domainApp, "prod"), "fullchain.pem"))
+	if err != nil || string(restored) != string(prodPEM) {
+		t.Fatalf("restored PEM mismatch err=%v", err)
+	}
+
+	if got := env.installed(t)[domainApp]; got != "prod" {
+		t.Fatalf("mode after restore = %q", got)
+	}
+
+	afterRestore, ok, err := store.ProdIssuedAt(domainApp)
+	if err != nil || !ok || !afterRestore.Equal(prodIssued) {
+		t.Fatalf("restore must not bump prod.issued_at: before=%v after=%v ok=%v err=%v",
+			prodIssued, afterRestore, ok, err)
+	}
+}
+
+func TestProcessRouting_ProdSoftTTLExpiryHitsCADespiteCache(t *testing.T) {
+	t.Parallel()
+
+	env := newRouteEnv(t)
+
+	err := env.runLive(domainProject("prod"))
+	if err != nil {
+		t.Fatalf("cycle prod: %v", err)
+	}
+
+	expired := time.Now().UTC().Add(-2 * certUpdateSec * time.Second).Format(certmanagement.CertTimeLayout)
+	env.writeCertStatus(t, "prod", expired)
+
+	env.acme.calls = nil
+
+	err = env.runLive(domainProject("prod"))
+	if err != nil {
+		t.Fatalf("cycle soft-TTL expiry: %v", err)
+	}
+
+	if want := []string{domainApp + ":prod"}; !equalStrings(env.acme.calls, want) {
+		t.Fatalf("acme calls = %v, want CA renew after soft TTL", env.acme.calls)
+	}
+}
+
+func TestProcessRouting_ColdRestoreProdFromCertsJSON(t *testing.T) {
+	t.Parallel()
+
+	env := newRouteEnv(t)
+
+	err := env.runLive(domainProject("prod"))
+	if err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+
+	prodPEM, err := os.ReadFile(filepath.Join(certDir(env.infra, domainApp, "prod"), "fullchain.pem"))
+	if err != nil {
+		t.Fatalf("read prod pem: %v", err)
+	}
+
+	err = os.RemoveAll(certDir(env.infra, domainApp, "prod"))
+	if err != nil {
+		t.Fatalf("remove live: %v", err)
+	}
+
+	env.acme.calls = nil
+
+	err = env.runLive(domainProject("prod"))
+	if err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+
+	if len(env.acme.calls) != 0 {
+		t.Fatalf("acme calls = %v, want cold restore without CA", env.acme.calls)
+	}
+
+	restored, err := os.ReadFile(filepath.Join(certDir(env.infra, domainApp, "prod"), "fullchain.pem"))
+	if err != nil || string(restored) != string(prodPEM) {
+		t.Fatalf("cold restore PEM mismatch err=%v", err)
 	}
 }
 

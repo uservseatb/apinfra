@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/uservseatb/apinfra/internal/acme"
+	"github.com/uservseatb/apinfra/internal/certstore"
 	"github.com/uservseatb/apinfra/internal/config"
 	"github.com/uservseatb/apinfra/internal/domain/certmanagement"
 	"github.com/uservseatb/apinfra/internal/domain/deployment"
@@ -100,12 +101,13 @@ func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
 		dockerEvents,
 		docker.Config{ //nolint:exhaustruct_v5 // TrustedImagesPath empty → NewService default $HOME/.trusted_images
 			Timeouts: docker.ApplyTimeouts{
-				Login:       cfg.DockerLoginTimeout,
-				ComposePull: cfg.DockerComposePullTimeout,
-				ComposeUp:   cfg.DockerComposeUpTimeout,
-				ComposeDown: cfg.DockerComposeDownTimeout,
-				Prune:       cfg.DockerPruneTimeout,
-				API:         cfg.DockerAPITimeout,
+				Login:           cfg.DockerLoginTimeout,
+				ComposePull:     cfg.DockerComposePullTimeout,
+				ComposeUp:       cfg.DockerComposeUpTimeout,
+				ComposeDown:     cfg.DockerComposeDownTimeout,
+				Prune:           cfg.DockerPruneTimeout,
+				API:             cfg.DockerAPITimeout,
+				ProxyReadyAfter: cfg.ProxyReadyAfter,
 			},
 		},
 	)
@@ -159,6 +161,7 @@ func newACMEClient(cfg *config.HostConfig) *acme.Client {
 			LetsEncryptStaging: cfg.LetsEncryptStagingDirectory,
 			ZeroSSL:            cfg.ZeroSSLDirectory,
 		},
-		FS: sys.FileWriter{},
+		FS:       sys.FileWriter{},
+		Accounts: certstore.New(cfg.InfraDirPath),
 	})
 }

@@ -20,14 +20,12 @@ import (
 var errNilContext = errors.New("nil context")
 
 const (
-	proxyContainerName    = "apinfra-proxy"
-	composeFileName       = "docker-compose.yml"
-	appsDirName           = "apps"
-	composeProjectPrefix  = "apinfra_"
-	containerStateRunning = "running"
-	composeProjectLabel   = "com.docker.compose.project"
-	composeServiceLabel   = "com.docker.compose.service"
-	proxyReadyAfter       = 30 * time.Second
+	proxyContainerName   = "apinfra-proxy"
+	composeFileName      = "docker-compose.yml"
+	appsDirName          = "apps"
+	composeProjectPrefix = "apinfra_"
+	composeProjectLabel  = "com.docker.compose.project"
+	composeServiceLabel  = "com.docker.compose.service"
 )
 
 // CliRunner implements docker CLI/API and nginx proxy/DNS ports via host commands.

@@ -540,7 +540,7 @@ func (s *Service) planStacksToStart(
 
 	runningProjects := runningComposeProjects(containers, desiredServices)
 	proxyRunning := proxyRunningAmong(containers)
-	proxyReady := proxyReadyAmong(containers)
+	proxyReady := proxyReadyAmong(containers, s.timeouts.ProxyReadyAfter)
 
 	return appsNeedingStart(enabled, stackChanged, applyPending, runningProjects),
 		needProxyFromFiles || !proxyRunning,

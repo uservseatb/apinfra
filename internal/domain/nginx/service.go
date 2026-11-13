@@ -72,7 +72,7 @@ func (s *RoutingService) ProcessRouting(ctx context.Context, params RoutingParam
 
 	installedByName, err := s.installedCertMap()
 	if err != nil {
-		return fmt.Errorf("load .installedCert: %w", err)
+		return fmt.Errorf("load .certs.json: %w", err)
 	}
 
 	certsChanged, err := s.syncNoneCertModes(params.Projects, installedByName)

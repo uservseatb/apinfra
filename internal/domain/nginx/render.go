@@ -94,7 +94,7 @@ func (s *RoutingService) writeServiceConfigs(
 
 	installedByName, err := s.installedCertMap()
 	if err != nil {
-		return false, fmt.Errorf("load .installedCert: %w", err)
+		return false, fmt.Errorf("load .certs.json: %w", err)
 	}
 
 	anyChanged := false
@@ -271,7 +271,7 @@ func tplPlaceholder(name string) string {
 	return "$${" + name + "}$$"
 }
 
-// certIdentity is the .installedCert / PEM directory key for a proxy project.
+// certIdentity is the ~/.certs.json / PEM directory key for a proxy project.
 func certIdentity(cfg Project) string {
 	switch {
 	case cfg.DomainName != "":

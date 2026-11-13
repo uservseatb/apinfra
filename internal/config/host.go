@@ -24,6 +24,7 @@ const (
 	defaultDockerAPITimeout      = 30 * time.Second
 	defaultNginxCLITimeout       = 30 * time.Second
 	defaultDomainPrecheckTimeout = 15 * time.Second
+	defaultProxyReadyAfter       = 30 * time.Second
 
 	// Compose / prune can legitimately run longer than ACME/git.
 	defaultComposePullTimeout = 10 * time.Minute
@@ -40,6 +41,7 @@ const (
 	keyDockerAPITimeout            = "dockerAPITimeout"
 	keyNginxCLITimeout             = "nginxCLITimeout"
 	keyDomainPrecheckTimeout       = "domainPrecheckTimeout"
+	keyProxyReadyAfter             = "proxyReadyAfter"
 	keyCertIssueTimeout            = "certIssueTimeout"
 	keyCertsProvider               = "certs.provider"
 	keyCertsPublicIP               = "certs.publicIP"
@@ -98,6 +100,7 @@ type HostConfig struct {
 	DockerAPITimeout            time.Duration
 	NginxCLITimeout             time.Duration
 	DomainPrecheckTimeout       time.Duration
+	ProxyReadyAfter             time.Duration
 	CertIssueTimeout            time.Duration
 	CertsProvider               string
 	CertsPublicIP               string
@@ -196,6 +199,7 @@ func buildHostConfig(infraDirPath, configPath string, envs map[string]string) (*
 		DockerAPITimeout:            timeouts.dockerAPI,
 		NginxCLITimeout:             timeouts.nginxCLI,
 		DomainPrecheckTimeout:       timeouts.domainPrecheck,
+		ProxyReadyAfter:             timeouts.proxyReadyAfter,
 		CertIssueTimeout:            timeouts.certIssue,
 		CertsProvider:               certs.provider,
 		CertsPublicIP:               certs.publicIP,
@@ -211,16 +215,17 @@ func buildHostConfig(infraDirPath, configPath string, envs map[string]string) (*
 }
 
 type hostTimeouts struct {
-	git            time.Duration
-	dockerLogin    time.Duration
-	composePull    time.Duration
-	composeUp      time.Duration
-	composeDown    time.Duration
-	prune          time.Duration
-	dockerAPI      time.Duration
-	nginxCLI       time.Duration
-	domainPrecheck time.Duration
-	certIssue      time.Duration
+	git             time.Duration
+	dockerLogin     time.Duration
+	composePull     time.Duration
+	composeUp       time.Duration
+	composeDown     time.Duration
+	prune           time.Duration
+	dockerAPI       time.Duration
+	nginxCLI        time.Duration
+	domainPrecheck  time.Duration
+	proxyReadyAfter time.Duration
+	certIssue       time.Duration
 }
 
 func parseHostTimeouts(envs map[string]string) (hostTimeouts, error) {
@@ -271,6 +276,11 @@ func parseHostTimeouts(envs map[string]string) (hostTimeouts, error) {
 	out.domainPrecheck, err = optionalHostDuration(envs, keyDomainPrecheckTimeout, defaultDomainPrecheckTimeout)
 	if err != nil {
 		return hostTimeouts{}, fmt.Errorf("%s: %w", keyDomainPrecheckTimeout, err)
+	}
+
+	out.proxyReadyAfter, err = optionalHostDuration(envs, keyProxyReadyAfter, defaultProxyReadyAfter)
+	if err != nil {
+		return hostTimeouts{}, fmt.Errorf("%s: %w", keyProxyReadyAfter, err)
 	}
 
 	out.certIssue, err = optionalHostDuration(envs, keyCertIssueTimeout, defaultShortTimeout)

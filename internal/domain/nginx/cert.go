@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/uservseatb/apinfra/internal/certstore"
 )
 
 // certNeedsReissue reports whether a cert must be (re)issued for the current mode/ttl.
@@ -44,8 +46,10 @@ func (s *RoutingService) pruneStaleInstalledCerts(
 		return false, fmt.Errorf("load installed certs: %w", err)
 	}
 
+	now := time.Now().UTC()
 	kept := make([]CertDescriptor, 0, len(existing))
 	removed := make([]string, 0)
+	retained := make([]string, 0)
 
 	for _, cert := range existing {
 		if _, ok := desired[cert.DomainName]; ok {
@@ -54,21 +58,36 @@ func (s *RoutingService) pruneStaleInstalledCerts(
 			continue
 		}
 
-		removed = append(removed, cert.DomainName)
 		delete(installedByName, cert.DomainName)
 		s.fs.RemoveCertMaterial(cert.DomainName)
+
+		if s.fs.ProdCertUsable(cert.DomainName, certstore.DefaultProdUpdateSec, now) {
+			kept = append(kept, cert)
+			retained = append(retained, cert.DomainName)
+
+			continue
+		}
+
+		removed = append(removed, cert.DomainName)
 	}
 
-	if len(removed) == 0 {
+	if len(removed) == 0 && len(retained) == 0 {
 		return false, nil
 	}
 
-	slices.Sort(removed)
-	log.Printf("[nginx] pruning installed certs not in settings: %s", strings.Join(removed, ", "))
+	if len(removed) > 0 {
+		slices.Sort(removed)
+		log.Printf("[nginx] pruning installed certs not in settings: %s", strings.Join(removed, ", "))
+	}
+
+	if len(retained) > 0 {
+		slices.Sort(retained)
+		log.Printf("[nginx] retaining usable prod cert cache for removed projects: %s", strings.Join(retained, ", "))
+	}
 
 	changed, err := s.fs.SaveInstalledCerts(kept)
 	if err != nil {
-		return false, fmt.Errorf("write .installedCert after prune: %w", err)
+		return false, fmt.Errorf("write .certs.json after prune: %w", err)
 	}
 
 	return changed, nil
@@ -149,10 +168,36 @@ func (s *RoutingService) issueOneNeededCert(
 		return false, "", nil
 	}
 
+	if mode == CertModeProd {
+		restored, restoreErr := s.restoreProdFromCache(name, installedByName, cfg.CertUpdateSec, now)
+		if restoreErr != nil {
+			return false, "", restoreErr
+		}
+
+		if restored {
+			return true, "", nil
+		}
+	}
+
 	if !s.dnsPreflightOK(ctx, name, mode, publicIP) {
 		return false, name, nil
 	}
 
+	return s.issueAndRecordCert(
+		ctx, cfg, name, requested, mode, installed, hasInstalled, installedByName, confSnaps, now,
+	)
+}
+
+func (s *RoutingService) issueAndRecordCert(
+	ctx context.Context,
+	cfg Project,
+	name, requested, mode string,
+	installed CertDescriptor,
+	hasInstalled bool,
+	installedByName map[string]CertDescriptor,
+	confSnaps map[string]ConfigSnapshot,
+	now time.Time,
+) (bool, string, error) {
 	logCertIssueStart(name, mode, installedByName)
 
 	installedFresh := hasInstalled && installed.Mode != "" &&
@@ -167,11 +212,18 @@ func (s *RoutingService) issueOneNeededCert(
 		return false, name, nil
 	}
 
+	if issued.Mode == CertModeProd {
+		putErr := s.fs.PutProdCertMaterialFromDisk(name, "")
+		if putErr != nil {
+			log.Printf("[nginx] WARN cache prod cert name=%s: %v", name, putErr)
+		}
+	}
+
 	if installedFresh && installed.Mode == issued.Mode {
 		return false, "", nil
 	}
 
-	_, err = s.recordIssuedCert(name, issued.Mode)
+	err = s.recordIssuedCert(name, issued.Mode)
 	if err != nil {
 		return false, "", err
 	}
@@ -185,6 +237,63 @@ func (s *RoutingService) issueOneNeededCert(
 	}
 
 	return true, "", nil
+}
+
+// restoreProdFromCache materializes prod PEMs when soft TTL allows.
+// Does not bump certs.prod.issued_at — MaterializeProd only sets active_mode=prod.
+func (s *RoutingService) restoreProdFromCache(
+	name string,
+	installedByName map[string]CertDescriptor,
+	updateSec int64,
+	now time.Time,
+) (bool, error) {
+	if !s.fs.ProdCertUsable(name, updateSec, now) {
+		return false, nil
+	}
+
+	ok, err := s.fs.MaterializeProdCert(name, updateSec, now)
+	if err != nil {
+		return false, fmt.Errorf("materialize prod cert %s: %w", name, err)
+	}
+
+	if !ok {
+		return false, nil
+	}
+
+	log.Printf("[nginx] restored prod cert from cache name=%s (skip CA)", name)
+
+	installedByName[name] = restoredProdDescriptor(s.fs, name, installedByName)
+
+	return true, nil
+}
+
+func restoredProdDescriptor(
+	fs IngressFileSystem,
+	name string,
+	installedByName map[string]CertDescriptor,
+) CertDescriptor {
+	loaded, err := fs.LoadInstalledCerts()
+	if err == nil {
+		for _, cert := range loaded {
+			if cert.DomainName == name && cert.Mode == CertModeProd {
+				return cert
+			}
+		}
+	}
+
+	if prev, ok := installedByName[name]; ok && !prev.IssueDateTime.IsZero() {
+		return CertDescriptor{
+			DomainName:    name,
+			IssueDateTime: prev.IssueDateTime,
+			Mode:          CertModeProd,
+		}
+	}
+
+	return CertDescriptor{
+		DomainName:    name,
+		IssueDateTime: time.Now().UTC(),
+		Mode:          CertModeProd,
+	}
 }
 
 func (s *RoutingService) resolveIssueMode(name, requested string) string {
@@ -202,7 +311,7 @@ func (s *RoutingService) resolveIssueMode(name, requested string) string {
 	return mode
 }
 
-// applyDowngradeNoneMode records .installedCert as none when an active rate-limit
+// applyDowngradeNoneMode records cert status as none when an active rate-limit
 // downgrade overrides settings to plain HTTP. Skips ACME; conf rewrite uses confCertMode.
 func (s *RoutingService) applyDowngradeNoneMode(
 	name string,
@@ -387,10 +496,10 @@ func (s *RoutingService) recordInstalledCertMode(domainName, mode string, preser
 	return changed, nil
 }
 
-func (s *RoutingService) recordIssuedCert(domain, mode string) (bool, error) {
+func (s *RoutingService) recordIssuedCert(domain, mode string) error {
 	existing, err := s.fs.LoadInstalledCerts()
 	if err != nil {
-		return false, fmt.Errorf("load installed certs: %w", err)
+		return fmt.Errorf("load installed certs: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -408,12 +517,12 @@ func (s *RoutingService) recordIssuedCert(domain, mode string) (bool, error) {
 		Mode:          mode,
 	})
 
-	changed, err := s.fs.SaveInstalledCerts(updated)
+	_, err = s.fs.SaveInstalledCerts(updated)
 	if err != nil {
-		return false, fmt.Errorf("record issued cert domain=%s mode=%s: %w", domain, mode, err)
+		return fmt.Errorf("record issued cert domain=%s mode=%s: %w", domain, mode, err)
 	}
 
-	return changed, nil
+	return nil
 }
 
 func wantsCertificate(cfg Project) bool {

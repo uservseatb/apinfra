@@ -24,6 +24,9 @@ type IngressFileSystem interface {
 	RemoveCertMaterial(domain string)
 	LoadInstalledCerts() ([]CertDescriptor, error)
 	SaveInstalledCerts(certs []CertDescriptor) (changed bool, err error)
+	ProdCertUsable(domain string, updateSec int64, now time.Time) bool
+	MaterializeProdCert(domain string, updateSec int64, now time.Time) (restored bool, err error)
+	PutProdCertMaterialFromDisk(domain, provider string) error
 }
 
 // ProxyController runs nginx -t / reload against the proxy container.

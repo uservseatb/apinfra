@@ -51,7 +51,7 @@ type Project struct {
 	CertAcmeEmail  string
 }
 
-// CertDescriptor describes an issued certificate recorded in .installedCert.
+// CertDescriptor describes an issued certificate recorded in ~/.certs.json.
 type CertDescriptor struct {
 	DomainName    string
 	IssueDateTime time.Time

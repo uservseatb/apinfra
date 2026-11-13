@@ -42,6 +42,7 @@ certs.downgradeCertModeHours=24
 # dockerAPITimeout=30s             # container list, default 30s
 # nginxCLITimeout=30s              # nginx -t / reload, default 30s
 # domainPrecheckTimeout=15s        # domain check (dig +short), default 15s
+# proxyReadyAfter=30s              # min apinfra-proxy uptime before quiet-cycle ACME, default 30s
 # certIssueTimeout=1m              # ACME obtain, default 1m
 
 # Optional ACME CA directory URLs (lego CADirURL). Omitted → public CA defaults.

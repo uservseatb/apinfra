@@ -409,7 +409,7 @@ image: ghcr.io/example/storefront-web:${WEB_IMAGE_TAG}
 
 #### How the process works (lifecycle)
 
-1. **Issuance need check:** On every one-minute cycle the agent consults the local state file `.installedCert`. An ACME request is made only in three cases: the project has no certificate yet, the current certificate is about to expire, or `cert-issue-type` changed in `settings.yml`.
+1. **Issuance need check:** On every one-minute cycle the agent consults the local state file `.certs.json`. An ACME request is made only in three cases: the project has no certificate yet, the soft TTL (`issued_at` + `cert-update-time-sec`) for the active mode has elapsed, or `cert-issue-type` changed in `settings.yml`. For `prod`, cached PEMs are restored to disk first when that prod soft TTL is still valid (no CA call; `certs.prod.issued_at` is not bumped).
 2. **DNS preflight:** Before sending an ACME request for `prod` or `test`, the agent resolves the domain locally (`dig +short <domain>`).
     * If the DNS record is not ready yet (empty answer) or a network error occurs, the agent simply **skips** that domain for this cycle. The error counter (`attempts`) is not increased and the mode is not downgraded. This avoids false blocks while the domain is still being delegated.
     * If `certs.publicIP` is set, the agent also requires that IP to appear in the `dig` response.
@@ -423,7 +423,7 @@ To track status and stay idempotent, the agent uses files in the `ap` user's hom
 
 | File | Description and role |
 | :--- | :--- |
-| `.installedCert` | Last **successful** issuance per domain as `domain → time\|mode`. Updated only after a successful certificate generation. |
+| `.certs.json` | Host certificate store (`0600`): per identity `active_mode` plus a `certs` map keyed by type (`prod` / `test` / `mock` / `none`), each with its own `issued_at`. PEM blobs (`certificate` / `private_key`) are stored **only** under `certs.prod`. Also holds ACME account keys. Soft TTL for reuse/renew is `issued_at + cert-update-time-sec` (NotAfter is not used as a gate). Copy this file to a new server to restore prod certs without re-hitting Let's Encrypt. Legacy `.installedCert` and flat v1 entries are migrated automatically on first read. |
 | `.downgradeCertMode` | Temporary forced mode (`prod`→`test`→`mock`→`none`) with an `until` timestamp. Created on ACME rate limit. While active it overrides `settings.yml`; after the TTL it clears itself. |
 | `.retries` | Internal counter of failed issuance attempts (non–rate-limit errors). Stores `attempts`, `blocked`, and `blocked_until`. |
 
@@ -593,12 +593,12 @@ Allowed `cert-issue-type` values depend on the inbound routing mode:
 <tr bgcolor="#f6f8fa">
 <td><code>test</code></td>
 <td><code>2592000</code> (30 days)</td>
-<td>Let's Encrypt staging certificates (ACME staging directory via lego). Domain routing only. Use to validate ACME without rate limits; re-issue replaces an existing production certificate with a staging one.</td>
+<td>Let's Encrypt staging certificates (ACME staging directory via lego). Domain routing only. Use to validate ACME without rate limits. Staging PEMs are written to the shared live path on disk; a still-valid production certificate is retained in <code>.certs.json</code> and restored when settings return to <code>prod</code>.</td>
 </tr>
 <tr>
 <td><code>none</code></td>
 <td>—</td>
-<td>Do not use TLS. Nginx serves plain HTTP (no HTTPS / no redirect). <code>.installedCert</code> is updated to <code>none</code> (previous issue date kept). Default for port mode.</td>
+<td>Do not use TLS. Nginx serves plain HTTP (no HTTPS / no redirect). <code>.certs.json</code> <code>active_mode</code> is updated to <code>none</code> (previous issue date kept; cached prod PEMs are retained while soft TTL is still valid). Default for port mode.</td>
 </tr>
 </tbody>
 </table>
@@ -704,6 +704,11 @@ Omit a key or leave it empty for the default. Values are Go durations (`30s`, `1
 <td>Domain check via <code>dig +short</code> before ACME.</td>
 </tr>
 <tr>
+<td><code>proxyReadyAfter</code></td>
+<td><code>30s</code></td>
+<td>Minimum <code>apinfra-proxy</code> uptime before ACME on a quiet cycle (no conf reload before issuance). Cycles that reload nginx for new vhosts skip this wait.</td>
+</tr>
+<tr bgcolor="#f6f8fa">
 <td><code>certIssueTimeout</code></td>
 <td><code>1m</code></td>
 <td>ACME certificate obtain (HTTP-01). Timeout is a normal issuance error (retries / not rate-limit downgrade).</td>

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/uservseatb/apinfra/internal/certstore"
 )
 
 var errNoSecondary = errors.New("no secondary ACME provider configured")
@@ -18,13 +20,15 @@ type Config struct {
 	Provider    string // letsencrypt|zerossl
 	KID, HMAC   string
 	Directories Directories
-	FS          fileWriter // required; app passes sys.FileWriter
+	FS          fileWriter       // required; app passes sys.FileWriter
+	Accounts    *certstore.Store // optional; persists ACME accounts in ~/.certs.json
 }
 
 // Client is a thin certificate issuer: one CA call per Issue / IssueSecondary.
 type Client struct {
 	infraDir string
 	fs       fileWriter
+	accounts *certstore.Store
 	pair     providerPair
 }
 
@@ -33,6 +37,7 @@ func NewClient(cfg Config) *Client {
 	return &Client{
 		infraDir: cfg.InfraDir,
 		fs:       cfg.FS,
+		accounts: cfg.Accounts,
 		pair:     newProviderPair(cfg.Provider, cfg.KID, cfg.HMAC, cfg.Directories),
 	}
 }
@@ -91,7 +96,7 @@ func (c *Client) issue(
 
 	log.Printf("[acme] obtaining domain=%s mode=%s provider=%s", domain, mode, providerID)
 
-	err = obtainCert(ctx, c.fs, c.infraDir, domain, email, mode, timeout, prov)
+	err = obtainCert(ctx, c.fs, c.accounts, c.infraDir, domain, email, mode, providerID, timeout, prov)
 	if err != nil {
 		return Paths{}, fmt.Errorf("provider %s: %w", providerID, err)
 	}

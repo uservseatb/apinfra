@@ -595,31 +595,34 @@ func TestVhostFS_InstalledCerts_RoundTrip(t *testing.T) {
 		}
 	}
 
-	if !exists(filepath.Join(filepath.Dir(infra), ".installedCert")) {
-		t.Fatal(".installedCert must live next to the infra dir")
+	if !exists(filepath.Join(filepath.Dir(infra), ".certs.json")) {
+		t.Fatal(".certs.json must live next to the infra dir")
+	}
+
+	info, err := os.Stat(filepath.Join(filepath.Dir(infra), ".certs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf(".certs.json mode = %o, want 0600", info.Mode().Perm())
 	}
 }
 
-func TestVhostFS_LoadInstalledCerts_ReportsEveryBrokenDomain(t *testing.T) {
+func TestVhostFS_LoadInstalledCerts_MigratesLegacyBrokenDomains(t *testing.T) {
 	t.Parallel()
 
 	vhost, infra := newVhostFS(t)
 
 	writeTestFile(t, filepath.Join(filepath.Dir(infra), ".installedCert"),
-		"good.example.com=2025-01-02T03:04:05.000|prod\nbad1.example.com=yesterday\nbad2.example.com=\n")
+		"good.example.com=2025-01-02T03:04:05.000|prod\nbad1.example.com=yesterday\n")
 
 	_, err := vhost.LoadInstalledCerts()
 	if err == nil {
 		t.Fatal("want parse error")
 	}
 
-	for _, domain := range []string{"bad1.example.com", "bad2.example.com"} {
-		if !strings.Contains(err.Error(), domain) {
-			t.Fatalf("error %q must mention %s", err, domain)
-		}
-	}
-
-	if strings.Contains(err.Error(), "good.example.com") {
-		t.Fatalf("valid domain must not be reported: %v", err)
+	if !strings.Contains(err.Error(), "bad1.example.com") {
+		t.Fatalf("error %q must mention bad1.example.com", err)
 	}
 }

@@ -2,16 +2,17 @@ package docker
 
 import "time"
 
-// proxyReadyAfter is how long apinfra-proxy must be up before cert issuance is safe.
-const proxyReadyAfter = 30 * time.Second
-
 const containerStateRunning = "running"
 
-func proxyReadyAmong(containers []Container) bool {
+func proxyReadyAmong(containers []Container, readyAfter time.Duration) bool {
+	if readyAfter <= 0 {
+		readyAfter = defaultProxyReadyAfter
+	}
+
 	for _, c := range containers {
 		if c.Name == proxyContainerName &&
 			c.State == containerStateRunning &&
-			c.UpTime >= proxyReadyAfter {
+			c.UpTime >= readyAfter {
 			return true
 		}
 	}

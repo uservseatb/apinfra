@@ -37,12 +37,13 @@ type Container struct {
 
 // ApplyTimeouts bounds each docker CLI / API call. Zero fields use package defaults.
 type ApplyTimeouts struct {
-	Login       time.Duration
-	ComposePull time.Duration
-	ComposeUp   time.Duration
-	ComposeDown time.Duration
-	Prune       time.Duration
-	API         time.Duration
+	Login           time.Duration
+	ComposePull     time.Duration
+	ComposeUp       time.Duration
+	ComposeDown     time.Duration
+	Prune           time.Duration
+	API             time.Duration
+	ProxyReadyAfter time.Duration
 }
 
 // Config holds construction-time settings for Service.
