@@ -29,11 +29,102 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 * **Port / host-network exposure guard:** By default, all `ports` mappings and any `network_mode: host` in docker-compose are stripped, so containers are not accidentally published on the host network stack; public access goes only through the managed Nginx routes. When needed, you can still configure port forwarding bound to a specific IP (`allow-ports-mapping: true`).
 * **Lightweight & Fast:** Built with Go — minimal overhead, low memory footprint, and fast execution.
 
-## 🧪 Testing & Stability
+## Quick Example: Deploying a Full-Stack Web App
 
-Every core mechanic — including configuration validation, Nginx config rollbacks, and ACME certificate downgrades — is covered by comprehensive end-to-end tests.
-Our testing suite runs inside an isolated Linux container to prevent host port collisions (`:80`/`:443`) and uses the official Let's Encrypt **Pebble** CA stub to simulate real-world production ACME failures, rate limits, and DNS preflights.
-👉 Check out the test scenarios and architecture here: **[apinfra-e2e](https://github.com/uservseatb/apinfra-e2e)**
+Here is how a typical web application (frontend + API + PostgreSQL) looks in your configuration Git repository under the `dev/` namespace:
+
+```text
+dev/
+├── settings.yml
+└── webapp/
+    ├── docker-compose.yml
+    └── .env
+```
+
+### 1. `dev/settings.yml`
+
+Exposes the `frontend` service on `https://example.com` with an automated Let's Encrypt production certificate, while keeping `api` and `db` private inside the isolated `webapp_net` Docker network:
+
+```yaml
+version: "1.0"
+projects:
+  - name: webapp
+    enabled: true
+    proxy:
+      inbound:
+        domain-name: example.com
+      target:
+        service-name: frontend
+        port: 80
+    config:
+      cert-issue-type: prod
+      cert-acme-email: ops@example.com
+```
+
+### 2. `dev/webapp/docker-compose.yml`
+
+Standard Compose file. Note that `ports:` are omitted (and stripped by default for security), `db` uses a named volume, and services talk to each other over Docker DNS:
+
+```yaml
+services:
+  frontend:
+    image: ghcr.io/example/webapp-frontend:${FRONTEND_IMAGE_TAG}
+    expose:
+      - "80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    image: ghcr.io/example/webapp-api:${API_IMAGE_TAG}
+    environment:
+      DATABASE_URL: postgres://db:5432/webapp
+      DATABASE_USER: webapp
+      DATABASE_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: webapp
+      POSTGRES_USER: webapp
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+```
+
+### 3. Variables & Secrets (`.env`)
+
+Non-sensitive image tags live in Git (`dev/webapp/.env`), while the secrets live on the host (`/home/ap/.env`) prefixed with the uppercase project name (`WEBAPP_`):
+
+```bash
+# In Git: dev/webapp/.env (supports dot-notation normalization)
+frontend.image.tag=v1.4.2
+api.image.tag=v1.4.0
+```
+
+```bash
+# On host: /home/ap/.env (overrides repo .env, prefix stripped automatically)
+WEBAPP_DB_PASSWORD=super_secret_dev_db_password
+```
+
+```bash
+# On host: /home/ap/.apinfra
+namespace=dev
+# Git configuration repository
+repo=https://<you_config_repository>
+
+# Private Docker registry (optional)
+containerRegistryHost=https://<your_custom_registry>
+containerRegistryUser=example-user
+containerRegistryToken=ghp_your_custom_registry_token
+```
 
 ## How It Works
 
@@ -389,6 +480,12 @@ Drop `-f` to print recent logs without following, or add `-n 200` to limit the o
 * **Privilege Escalation Protection:** Every container is started with `no-new-privileges: true`. This forbids processes inside the container from gaining new privileges after startup (e.g. via setuid/setgid binaries). Even if the application inside the container initializes as root, this layer protects the host from runtime exploits and container-escape attempts. The agent explicitly forces `privileged: false` and strips any privileged flags or dangerous capabilities to isolate containers.
 * **Compose Include/Extends Guard:** `include` and `extends` are blocked to prevent host filesystem attacks via compose file composition.
 * **Strict Volume & Socket Control:** Only Docker named volumes are allowed (e.g. database data). Host path binds are blocked, except `/var/run/docker.sock` for images listed in `~/.trusted_images`. A violation writes a `security_violation` event and aborts the cycle before `compose up`.
+
+### Testing & Stability 🧪
+
+Every core mechanic — including configuration validation, Nginx config rollbacks, and ACME certificate downgrades — is covered by comprehensive end-to-end tests.
+Our testing suite runs inside an isolated Linux container to prevent host port collisions (`:80`/`:443`) and uses the official Let's Encrypt **Pebble** CA stub to simulate real-world production ACME failures, rate limits, and DNS preflights.
+👉 Check out the test scenarios and architecture here: **[apinfra-e2e](https://github.com/uservseatb/apinfra-e2e)**
 
 ### Project `.env` and Variable Normalization
 Each project folder may include an optional `.env` next to its `docker-compose.yml`. In that file you can use a dot-separated "Java-style" notation. Before evaluating the variables, the agent **normalizes** them: it replaces dots with underscores and converts strings to uppercase.
