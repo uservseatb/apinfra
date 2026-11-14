@@ -100,7 +100,7 @@ volumes:
 
 ### 3. Variables & Secrets (`.env`)
 
-Non-sensitive image tags live in Git (`dev/webapp/.env`), while the secrets live on the host (`/home/ap/.env`) prefixed with the uppercase project name (`WEBAPP_`):
+Non-sensitive image tags live in Git (`dev/webapp/.env`), while the secrets live on the host (`/home/ap/.env`) prefixed with the uppercase project name and a double underscore (`WEBAPP__`):
 
 ```bash
 # In Git: dev/webapp/.env (supports dot-notation normalization)
@@ -110,7 +110,7 @@ api.image.tag=v1.4.0       # Normalized to API_IMAGE_TAG
 
 ```bash
 # On host: /home/ap/.env (overrides repo .env, prefix stripped automatically)
-WEBAPP_DB_PASSWORD=super_secret_dev_db_password  # Stripped to DB_PASSWORD for project "webapp"
+WEBAPP__DB_PASSWORD=super_secret_dev_db_password  # Stripped to DB_PASSWORD for project "webapp"
 ```
 
 ```bash
@@ -417,8 +417,8 @@ If your compose files use public images exclusively, leave these three registry 
 
 You can inject host-specific environment variables or production secrets directly into your projects' containers from this file.
 
-* **Crucial Rule:** Any environment variable intended for a specific application inside your compose files **must be prefixed with the project's name** (converted to uppercase) followed by an underscore. The prefix is stripped before compose interpolation, so the project's `docker-compose.yml` and its `.env` in the config repository use the **unprefixed** name.
-* *Example:* If your project is named `storefront` in `settings.yml`, and you want to pass a database password, you must declare it in this file as `STOREFRONT_DB_PASSWORD=supersecret`.
+* **Crucial Rule:** Any environment variable intended for a specific application inside your compose files **must be prefixed with the project's name** (converted to uppercase) followed by a **double underscore** (`__`). The prefix is stripped before compose interpolation, so the project's `docker-compose.yml` and its `.env` in the config repository use the **unprefixed** name. Double underscore keeps nested project names (`app` / `app_billing`) from sharing host secrets.
+* *Example:* If your project is named `storefront` in `settings.yml`, and you want to pass a database password, you must declare it in this file as `STOREFRONT__DB_PASSWORD=supersecret`.
 * If the same variable is also defined in the project's `.env` inside the configuration repository, the value from `/home/ap/.env` on the host **overrides** it.
 
 ```yaml
@@ -439,7 +439,7 @@ IMAGE_TAG=0.3.7
 
 ```bash
 # server host: /home/ap/.env
-STOREFRONT_DB_PASSWORD=supersecret
+STOREFRONT__DB_PASSWORD=supersecret
 # ...
 ```
 
@@ -576,7 +576,7 @@ Issuance behavior and ACME CA selection can be configured in the host agent conf
 <tbody>
 <tr bgcolor="#f6f8fa">
 <td><code>name</code></td>
-<td><strong>Required.</strong> Unique project identifier (case-insensitive). Used as a prefix for environment variables (<code>TO_UPPER(name) + "_"</code>).</td>
+<td><strong>Required.</strong> Unique project identifier (case-insensitive). Used as a prefix for environment variables (<code>TO_UPPER(name) + "__"</code>).</td>
 </tr>
 <tr>
 <td><code>enabled</code></td>
