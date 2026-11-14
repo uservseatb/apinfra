@@ -985,7 +985,7 @@ func TestValidateProjects(t *testing.T) {
 		{
 			name:      "interpolation_from_host_prefixed",
 			project:   shopProject("services:\n  web:\n    image: nginx:${TAG}\n"),
-			hostEnv:   map[string]string{"SHOP_TAG": "1.30"},
+			hostEnv:   map[string]string{"SHOP__TAG": "1.30"},
 			wantNoErr: true,
 		},
 		{
@@ -996,7 +996,7 @@ func TestValidateProjects(t *testing.T) {
 
 				return p
 			}(),
-			hostEnv:   map[string]string{"SHOP_REPLICAS": "2"},
+			hostEnv:   map[string]string{"SHOP__REPLICAS": "2"},
 			wantNoErr: true,
 		},
 	}

@@ -20,7 +20,7 @@ type Project struct {
 }
 
 func (p Project) envPrefix() string {
-	return strings.ToUpper(p.Name) + "_"
+	return strings.ToUpper(p.Name) + "__"
 }
 
 // Container is a host container summary from the Docker Engine API.

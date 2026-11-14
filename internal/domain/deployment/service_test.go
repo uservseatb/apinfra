@@ -86,7 +86,7 @@ func newFake(mutate func(*fakeEnv)) *fakeEnv {
 				CertIssueType: "prod", CertUpdateSec: 60, CertAcmeEmail: "ops@example.com",
 				ComposeYAML: "services: {}",
 			}},
-			HostEnv: map[string]string{"SHOP_X": "1"},
+			HostEnv: map[string]string{"SHOP__X": "1"},
 		},
 		apply: docker.ApplyResult{
 			ProxyRunning: true, ProxyReady: true, Restarted: false,

@@ -43,7 +43,7 @@ type ServiceConfig struct {
 	AllowPortsMapping bool // projects[].config.allow-ports-mapping (default false)
 }
 
-// EnvPrefix returns the UPPERCASE project name prefix used for infra .env keys (e.g. "SCRAPIN_").
+// EnvPrefix returns the UPPERCASE project name prefix used for infra .env keys (e.g. "SCRAPIN__").
 func (cfg ServiceConfig) EnvPrefix() string {
-	return strings.ToUpper(cfg.Name) + "_"
+	return strings.ToUpper(cfg.Name) + "__"
 }

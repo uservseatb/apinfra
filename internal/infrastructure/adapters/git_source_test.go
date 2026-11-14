@@ -100,7 +100,7 @@ func newHostConfig(t *testing.T, repoURL string) *config.HostConfig {
 	envPath := filepath.Join(hostDir, ".env")
 	configPath := filepath.Join(hostDir, ".apinfra")
 
-	writeFileAt(t, envPath, "SHOP_TOKEN=from-host\n")
+	writeFileAt(t, envPath, "SHOP__TOKEN=from-host\n")
 	writeFileAt(t, configPath, "namespace=dev\n")
 
 	return &config.HostConfig{
@@ -158,7 +158,7 @@ func TestGitConfigSource_LoadWorkspace_AssemblesProjectsAndHostMaps(t *testing.T
 		t.Fatalf("worker without files must load with empty compose/env, got %+v", worker)
 	}
 
-	if workspace.HostEnv["SHOP_TOKEN"] != "from-host" || workspace.HostSettings["namespace"] != "dev" {
+	if workspace.HostEnv["SHOP__TOKEN"] != "from-host" || workspace.HostSettings["namespace"] != "dev" {
 		t.Fatalf("host maps: env=%v settings=%v", workspace.HostEnv, workspace.HostSettings)
 	}
 }

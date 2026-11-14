@@ -2,6 +2,7 @@ package docker_test
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,23 +61,38 @@ func TestValidateConfigDirEnv(t *testing.T) {
 		{
 			name:     "covered_by_host_prefix",
 			projects: []docker.Project{shopProject(composeWithTag)},
-			hostEnv:  map[string]string{"SHOP_TAG": "1.30"},
+			hostEnv:  map[string]string{"SHOP__TAG": "1.30"},
 		},
 		{
 			name:     "missing_everywhere",
 			projects: []docker.Project{shopProject(composeWithTag)},
-			wantErrs: []string{"project=shop", errMissingVars, "TAG", "SHOP_VAR"},
+			wantErrs: []string{"project=shop", errMissingVars, "TAG", "SHOP__VAR"},
 		},
 		{
 			name:     "other_project_prefix_does_not_cover",
 			projects: []docker.Project{shopProject(composeWithTag)},
-			hostEnv:  map[string]string{"BLOG_TAG": "1", "TAG": "unprefixed"},
+			hostEnv:  map[string]string{"BLOG__TAG": "1", "TAG": "unprefixed"},
 			wantErrs: []string{errMissingVars, "TAG"},
 		},
 		{
 			name:     "empty_host_value_counts_as_defined",
 			projects: []docker.Project{shopProject(composeWithTag)},
-			hostEnv:  map[string]string{"SHOP_TAG": ""},
+			hostEnv:  map[string]string{"SHOP__TAG": ""},
+		},
+		{
+			name: "nested_project_host_key_does_not_cover_shorter",
+			projects: []docker.Project{
+				{Name: "app", ComposeYAML: "services:\n  web:\n    image: nginx:${BILLING_TOKEN}\n"},
+				{Name: "app_billing", ComposeYAML: baseCompose},
+			},
+			hostEnv:  map[string]string{"APP_BILLING__TOKEN": "secret"},
+			wantErrs: []string{"project=app", errMissingVars, "BILLING_TOKEN"},
+		},
+		{
+			name:     "legacy_single_underscore_host_key_does_not_cover",
+			projects: []docker.Project{shopProject(composeWithTag)},
+			hostEnv:  map[string]string{"SHOP_TAG": "1.30"},
+			wantErrs: []string{errMissingVars, "TAG"},
 		},
 		{
 			name: "modifiers_are_not_required",
@@ -160,19 +176,24 @@ func TestApply_ProjectEnvFile(t *testing.T) {
 		},
 		{
 			name:    "host_prefix_is_stripped",
-			hostEnv: map[string]string{"SHOP_TOKEN": "abc"},
+			hostEnv: map[string]string{"SHOP__TOKEN": "abc"},
 			want:    []string{"TOKEN=abc"},
 		},
 		{
 			name:    "other_projects_host_keys_excluded",
-			hostEnv: map[string]string{"SHOP_TOKEN": "abc", "BLOG_TOKEN": "zzz", "PLAIN": "x", "SHOP_": "empty-suffix"},
+			hostEnv: map[string]string{"SHOP__TOKEN": "abc", "BLOG__TOKEN": "zzz", "PLAIN": "x", "SHOP__": "empty-suffix"},
 			want:    []string{"TOKEN=abc"},
 		},
 		{
 			name:    "host_wins_on_collision_and_sources_merge",
 			sidecar: "TOKEN=from-sidecar\nKEEP=k\n",
-			hostEnv: map[string]string{"SHOP_TOKEN": "from-host", "SHOP_EXTRA": "e"},
+			hostEnv: map[string]string{"SHOP__TOKEN": "from-host", "SHOP__EXTRA": "e"},
 			want:    []string{"EXTRA=e", "KEEP=k", "TOKEN=from-host"},
+		},
+		{
+			name:    "legacy_single_underscore_host_key_ignored",
+			hostEnv: map[string]string{"SHOP_TOKEN": "abc"},
+			want:    nil,
 		},
 	}
 
@@ -199,6 +220,72 @@ func TestApply_ProjectEnvFile(t *testing.T) {
 	}
 }
 
+func TestApply_HostEnvNestedProjectPrefixes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		projects []docker.Project
+		hostEnv  map[string]string
+		wantEnv  map[string]string // project name → apps/<name>/.env content (trimmed)
+	}{
+		{
+			name: "app_and_app_billing_no_cross_leak",
+			projects: []docker.Project{
+				namedProject("app"),
+				namedProject("app_billing"),
+			},
+			hostEnv: map[string]string{
+				"APP__TOKEN":         "app-secret",
+				"APP_BILLING__TOKEN": "billing-secret",
+			},
+			wantEnv: map[string]string{
+				"app":         "TOKEN=app-secret",
+				"app_billing": "TOKEN=billing-secret",
+			},
+		},
+		{
+			name: "underscore_nested_A_A_B_A_B_C",
+			projects: []docker.Project{
+				namedProject("A"),
+				namedProject("A_B"),
+				namedProject("A_B_C"),
+			},
+			hostEnv: map[string]string{
+				"A__TOKEN":     "a",
+				"A_B__TOKEN":   "ab",
+				"A_B_C__TOKEN": "abc",
+			},
+			wantEnv: map[string]string{
+				"A":     "TOKEN=a",
+				"A_B":   "TOKEN=ab",
+				"A_B_C": "TOKEN=abc",
+			},
+		},
+	}
+
+	for _, tcase := range tests {
+		t.Run(tcase.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newDockerEnv(t)
+
+			_, err := env.apply(t, tcase.projects, tcase.hostEnv, nil, true)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+
+			for project, want := range tcase.wantEnv {
+				path := filepath.Join(env.infra, "apps", project, ".env")
+				got := strings.TrimSpace(env.read(t, path))
+				if got != want {
+					t.Fatalf("project %s .env = %q, want %q", project, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestApply_ComposeInterpolation(t *testing.T) {
 	t.Parallel()
 
@@ -219,14 +306,14 @@ func TestApply_ComposeInterpolation(t *testing.T) {
 		{
 			name:      "from_host_prefix",
 			compose:   composeWithTag,
-			hostEnv:   map[string]string{"SHOP_TAG": "1.29"},
+			hostEnv:   map[string]string{"SHOP__TAG": "1.29"},
 			wantImage: "nginx:1.29",
 		},
 		{
 			name:      "host_beats_sidecar",
 			compose:   composeWithTag,
 			sidecar:   "TAG=sidecar\n",
-			hostEnv:   map[string]string{"SHOP_TAG": "host"},
+			hostEnv:   map[string]string{"SHOP__TAG": "host"},
 			wantImage: "nginx:host",
 		},
 		{

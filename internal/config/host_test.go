@@ -197,7 +197,7 @@ func TestLoadHostConfig_RestrictsSecretFilePermissions(t *testing.T) {
 	apinfraPath := filepath.Join(home, ".apinfra")
 	envPath := filepath.Join(home, ".env")
 
-	for path, content := range map[string]string{apinfraPath: minimalHost, envPath: "SHOP_TOKEN=abc\n"} {
+	for path, content := range map[string]string{apinfraPath: minimalHost, envPath: "SHOP__TOKEN=abc\n"} {
 		err := os.WriteFile(path, []byte(content), 0o600)
 		if err != nil {
 			t.Fatalf("write %s: %v", path, err)

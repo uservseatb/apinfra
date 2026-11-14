@@ -106,7 +106,7 @@ func normalizeEnvKey(key string) string {
 }
 
 // projectEnvFileLines builds unprefixed KEY=value lines for apps/<name>/.env.
-// Host keys use TO_UPPER(project)_ prefix and are stripped; host wins on collision.
+// Host keys use TO_UPPER(project)__ prefix and are stripped; host wins on collision.
 func projectEnvFileLines(project Project, sidecar, host map[string]string) []string {
 	merged := map[string]string{}
 	maps.Copy(merged, sidecar)
