@@ -29,7 +29,7 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 * **Port / host-network exposure guard:** By default, all `ports` mappings and any `network_mode: host` in docker-compose are stripped, so containers are not accidentally published on the host network stack; public access goes only through the managed Nginx routes. When needed, you can still configure port forwarding bound to a specific IP (`allow-ports-mapping: true`).
 * **Lightweight & Fast:** Built with Go — minimal overhead, low memory footprint, and fast execution.
 
-## Quick Example: Deploying a Full-Stack Web App
+## Configuration Example: Full-Stack Web App
 
 Here is how a typical web application (frontend + API + PostgreSQL) looks in your configuration Git repository under the `dev/` namespace:
 
@@ -43,13 +43,12 @@ dev/
 
 ### 1. `dev/settings.yml`
 
-Exposes the `frontend` service on `https://example.com` with an automated Let's Encrypt production certificate, while keeping `api` and `db` private inside the isolated `webapp_net` Docker network:
+Exposes the `frontend` service on `https://example.com` with an automated Let's Encrypt production certificate, while keeping `api` and `db` private inside the auto-created isolated `webapp_net` Docker network:
 
 ```yaml
 version: "1.0"
 projects:
   - name: webapp
-    enabled: true
     proxy:
       inbound:
         domain-name: example.com
@@ -105,20 +104,20 @@ Non-sensitive image tags live in Git (`dev/webapp/.env`), while the secrets live
 
 ```bash
 # In Git: dev/webapp/.env (supports dot-notation normalization)
-frontend.image.tag=v1.4.2
-api.image.tag=v1.4.0
+frontend.image.tag=v1.4.2  # Normalized to FRONTEND_IMAGE_TAG
+api.image.tag=v1.4.0       # Normalized to API_IMAGE_TAG
 ```
 
 ```bash
 # On host: /home/ap/.env (overrides repo .env, prefix stripped automatically)
-WEBAPP_DB_PASSWORD=super_secret_dev_db_password
+WEBAPP_DB_PASSWORD=super_secret_dev_db_password  # Stripped to DB_PASSWORD for project "webapp"
 ```
 
 ```bash
 # On host: /home/ap/.apinfra
 namespace=dev
 # Git configuration repository
-repo=https://<you_config_repository>
+repo=https://<your_config_repository>
 
 # Private Docker registry (optional)
 containerRegistryHost=https://<your_custom_registry>
