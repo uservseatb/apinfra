@@ -277,6 +277,7 @@ func TestApply_HostEnvNestedProjectPrefixes(t *testing.T) {
 
 			for project, want := range tcase.wantEnv {
 				path := filepath.Join(env.infra, "apps", project, ".env")
+
 				got := strings.TrimSpace(env.read(t, path))
 				if got != want {
 					t.Fatalf("project %s .env = %q, want %q", project, got, want)

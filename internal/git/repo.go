@@ -15,13 +15,13 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/storage/memory"
-
 	"github.com/uservseatb/apinfra/internal/sys"
 )
 
 var (
 	errEmptyRepoURL   = errors.New("empty repo URL")
 	errBranchNotFound = errors.New("branch not found")
+	errClone          = errors.New("clone failed")
 	// errAuth is returned when clone fails due to authentication/authorization.
 	errAuth = errors.New("git authentication failed")
 )
@@ -105,7 +105,7 @@ func Load(ctx context.Context, opt LoadOptions) (*Repo, error) {
 
 			return nil, fmt.Errorf("%w: clone %s: %s", errAuth, safeURL, safeErr)
 		default:
-			return nil, fmt.Errorf("clone %s: %s", safeURL, safeErr)
+			return nil, fmt.Errorf("%w: %s: %s", errClone, safeURL, safeErr)
 		}
 	}
 
