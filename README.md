@@ -158,7 +158,7 @@ Connect to your clean Linux server (Ubuntu) via SSH and execute the following co
 
 ```bash
 # 1. Download the latest package version
-curl -L -O https://github.com/uservseatb/apinfra/releases/download/v0.0.5/apinfra_0.0.5_amd64.deb
+curl -L -O https://github.com/uservseatb/apinfra/releases/download/v0.1.0/apinfra_0.1.0_amd64.deb
 
 # 2. Update package indexes and install
 sudo apt update
