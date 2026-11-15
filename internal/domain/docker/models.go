@@ -50,6 +50,8 @@ type ApplyTimeouts struct {
 type Config struct {
 	Timeouts          ApplyTimeouts
 	TrustedImagesPath string
+	ProxyNetworkMTU   int
+	ProjectNetworkMTU int
 }
 
 // ApplyResult is the outcome of Apply for the deployment orchestrator / nginx.

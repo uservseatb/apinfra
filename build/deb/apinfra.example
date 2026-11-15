@@ -45,6 +45,11 @@ certs.downgradeCertModeHours=24
 # proxyReadyAfter=30s              # min apinfra-proxy uptime before quiet-cycle ACME, default 30s
 # certIssueTimeout=1m              # ACME obtain, default 1m
 
+# Bridge MTU (com.docker.network.driver.mtu). Omitted or empty → 1350. Allowed range 68..65535.
+# Docker does not resize an existing network, recreate it to apply a new value.
+# proxyNetworkMTU=1350    # apinfra_proxy_net
+# projectNetworkMTU=1350  # each <project>_net
+
 # Optional ACME CA directory URLs (lego CADirURL). Omitted → public CA defaults.
 #certs.letsencrypt.directory=https://acme-v02.api.letsencrypt.org/directory
 #certs.letsencrypt.stagingDirectory=https://acme-staging-v02.api.letsencrypt.org/directory

@@ -109,6 +109,8 @@ func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
 				API:             cfg.DockerAPITimeout,
 				ProxyReadyAfter: cfg.ProxyReadyAfter,
 			},
+			ProxyNetworkMTU:   cfg.ProxyNetworkMTU,
+			ProjectNetworkMTU: cfg.ProjectNetworkMTU,
 		},
 	)
 

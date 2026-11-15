@@ -49,6 +49,8 @@ type Service struct {
 	lister            ContainerLister
 	events            EventRecorder
 	timeouts          ApplyTimeouts
+	proxyNetworkMTU   int
+	projectNetworkMTU int
 	trustedImagesPath string
 	trustedSocks      map[string][]trustedSockRef
 	trustedOnce       sync.Once
@@ -78,6 +80,8 @@ func NewService(
 		lister:            lister,
 		events:            events,
 		timeouts:          cfg.Timeouts.withDefaults(),
+		proxyNetworkMTU:   normalizeNetworkMTU(cfg.ProxyNetworkMTU),
+		projectNetworkMTU: normalizeNetworkMTU(cfg.ProjectNetworkMTU),
 		trustedImagesPath: trustedPath,
 	}
 }
@@ -630,7 +634,7 @@ func (s *Service) writeProxyStack(ctx context.Context, projects []Project) (bool
 		return false, false, fmt.Errorf("parse docker-compose template: %w", err)
 	}
 
-	configureProxy(composeProject, collectInboundPorts(projects))
+	configureProxy(composeProject, collectInboundPorts(projects), s.proxyNetworkMTU)
 	ensureContainerHardening(composeProject)
 	stripCompositionHooks(composeProject)
 
@@ -727,7 +731,7 @@ func (s *Service) prepareProjectCompose(
 	s.rememberTrustedSocks(project.Name, composeProject)
 
 	stripNetworkMode(composeProject, project.Name)
-	ensureProjectNetwork(composeProject, project.Name)
+	ensureProjectNetwork(composeProject, project.Name, s.projectNetworkMTU)
 	resolveProxyHost(project, composeProject)
 	attachProxyTargetNetwork(project, composeProject)
 	stripContainerNames(composeProject)

@@ -42,6 +42,8 @@ const (
 	keyNginxCLITimeout             = "nginxCLITimeout"
 	keyDomainPrecheckTimeout       = "domainPrecheckTimeout"
 	keyProxyReadyAfter             = "proxyReadyAfter"
+	keyProxyNetworkMTU             = "proxyNetworkMTU"
+	keyProjectNetworkMTU           = "projectNetworkMTU"
 	keyCertIssueTimeout            = "certIssueTimeout"
 	keyCertsProvider               = "certs.provider"
 	keyCertsPublicIP               = "certs.publicIP"
@@ -57,6 +59,11 @@ const (
 	defaultCertsTriesCount             = 3
 	defaultCertsBlockHours             = 24
 	defaultCertsDowngradeCertModeHours = 24
+
+	// Bridge MTU for apinfra_proxy_net and <project>_net. 1350 leaves room for tunnel overhead.
+	defaultNetworkMTU = 1350
+	minNetworkMTU     = 68
+	maxNetworkMTU     = 65535
 
 	defaultLetsEncryptDirectory        = "https://acme-v02.api.letsencrypt.org/directory"
 	defaultLetsEncryptStagingDirectory = "https://acme-staging-v02.api.letsencrypt.org/directory"
@@ -101,6 +108,8 @@ type HostConfig struct {
 	NginxCLITimeout             time.Duration
 	DomainPrecheckTimeout       time.Duration
 	ProxyReadyAfter             time.Duration
+	ProxyNetworkMTU             int
+	ProjectNetworkMTU           int
 	CertIssueTimeout            time.Duration
 	CertsProvider               string
 	CertsPublicIP               string
@@ -181,6 +190,11 @@ func buildHostConfig(infraDirPath, configPath string, envs map[string]string) (*
 		return nil, err
 	}
 
+	proxyNetworkMTU, projectNetworkMTU, err := parseNetworkMTUs(envs)
+	if err != nil {
+		return nil, err
+	}
+
 	return &HostConfig{
 		InfraDirPath:                infraDirPath,
 		ConfigPath:                  configPath,
@@ -200,6 +214,8 @@ func buildHostConfig(infraDirPath, configPath string, envs map[string]string) (*
 		NginxCLITimeout:             timeouts.nginxCLI,
 		DomainPrecheckTimeout:       timeouts.domainPrecheck,
 		ProxyReadyAfter:             timeouts.proxyReadyAfter,
+		ProxyNetworkMTU:             proxyNetworkMTU,
+		ProjectNetworkMTU:           projectNetworkMTU,
 		CertIssueTimeout:            timeouts.certIssue,
 		CertsProvider:               certs.provider,
 		CertsPublicIP:               certs.publicIP,
@@ -289,6 +305,36 @@ func parseHostTimeouts(envs map[string]string) (hostTimeouts, error) {
 	}
 
 	return out, nil
+}
+
+// parseNetworkMTUs reads bridge MTUs for apinfra_proxy_net and <project>_net.
+// Missing or empty keys use defaultNetworkMTU. Values outside 68..65535 are rejected.
+func parseNetworkMTUs(envs map[string]string) (int, int, error) {
+	proxyMTU, err := parseNetworkMTU(envs, keyProxyNetworkMTU, defaultNetworkMTU)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	projectMTU, err := parseNetworkMTU(envs, keyProjectNetworkMTU, defaultNetworkMTU)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return proxyMTU, projectMTU, nil
+}
+
+func parseNetworkMTU(envs map[string]string, key string, fallback int) (int, error) {
+	mtu, err := optionalHostPositiveInt(envs, key, fallback)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+
+	if mtu < minNetworkMTU || mtu > maxNetworkMTU {
+		return 0, fmt.Errorf("%s: %w %d: must be %d..%d",
+			key, errInvalidHostInt, mtu, minNetworkMTU, maxNetworkMTU)
+	}
+
+	return mtu, nil
 }
 
 type hostCertsSettings struct {

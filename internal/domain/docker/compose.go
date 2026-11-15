@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"slices"
 	"strconv"
@@ -32,6 +33,12 @@ const (
 
 	proxyHTTPPort  = 80
 	proxyHTTPSPort = 443
+
+	bridgeNetworkDriver   = "bridge"
+	dockerBridgeMTUOption = "com.docker.network.driver.mtu"
+
+	// defaultNetworkMTU fits common tunnel overhead (WireGuard, VXLAN).
+	defaultNetworkMTU = 1350
 )
 
 var (
@@ -281,7 +288,8 @@ func resolveServiceKey(project *types.Project, projectName, serviceName string) 
 // publishes 80/443 plus any inboundPorts, and attaches only proxyNetworkName
 // (project networks stay off the proxy). The proxy network is created with a
 // fixed Docker name (not project-prefixed) so app stacks can join it as external.
-func configureProxy(project *types.Project, inboundPorts []string) {
+// networkMTU is the bridge MTU; zero uses defaultNetworkMTU.
+func configureProxy(project *types.Project, inboundPorts []string, networkMTU int) {
 	key, svc, ok := findProxyService(project)
 	if !ok {
 		return
@@ -290,7 +298,7 @@ func configureProxy(project *types.Project, inboundPorts []string) {
 	svc.NetworkMode = ""
 	svc.Ports = buildProxyPorts(inboundPorts)
 
-	ensureProxyNetworkDeclared(project)
+	ensureProxyNetworkDeclared(project, networkMTU)
 
 	svc.Networks = map[string]*types.ServiceNetworkConfig{
 		proxyNetworkName: nil,
@@ -392,13 +400,41 @@ func newPublishedPort(target uint32, published string) types.ServicePortConfig {
 	}
 }
 
+func normalizeNetworkMTU(mtu int) int {
+	if mtu <= 0 {
+		return defaultNetworkMTU
+	}
+
+	return mtu
+}
+
+// withBridgeMTU sets the bridge driver and MTU, keeping the rest of cfg.
+// Docker does not resize a network that already exists.
+func withBridgeMTU(cfg types.NetworkConfig, networkMTU int) types.NetworkConfig {
+	if networkMTU <= 0 {
+		networkMTU = defaultNetworkMTU
+	}
+
+	opts := make(types.Options, len(cfg.DriverOpts)+1)
+	maps.Copy(opts, cfg.DriverOpts)
+	opts[dockerBridgeMTUOption] = strconv.Itoa(networkMTU)
+	cfg.Driver = bridgeNetworkDriver
+	cfg.DriverOpts = opts
+
+	return cfg
+}
+
 // ensureProxyNetworkDeclared creates proxyNetworkName with an explicit Docker
 // name so Compose does not prefix it with the project directory (e.g. infra_).
 // App stacks reference the same name via external: true.
-func ensureProxyNetworkDeclared(project *types.Project) {
+func ensureProxyNetworkDeclared(project *types.Project, networkMTU int) {
 	ensureNetworksMap(project)
-	//nolint:exhaustruct_v5 // only fixed Docker name is required
-	project.Networks[proxyNetworkName] = types.NetworkConfig{Name: proxyNetworkName}
+
+	//nolint:exhaustruct_v5 // name is fixed here; driver and MTU come from withBridgeMTU
+	project.Networks[proxyNetworkName] = withBridgeMTU(
+		types.NetworkConfig{Name: proxyNetworkName},
+		networkMTU,
+	)
 }
 
 // ensureExternalNetwork declares netName at the top level with external: true.
@@ -417,15 +453,15 @@ func ensureExternalNetwork(project *types.Project, netName string) {
 // Declares the network at the top level and adds it to each service's networks
 // list/map without removing any custom networks already present.
 // Services with network_mode set are skipped (mutually exclusive with networks).
-// Idempotent.
-func ensureProjectNetwork(project *types.Project, projectName string) {
+// networkMTU applies only to the managed project bridge. Idempotent.
+func ensureProjectNetwork(project *types.Project, projectName string, networkMTU int) {
 	projectName = strings.TrimSpace(projectName)
 	if projectName == "" || project == nil {
 		return
 	}
 
 	netName := projectName + "_net"
-	ensureNetworkDeclared(project, netName)
+	ensureNetworkDeclared(project, netName, networkMTU)
 
 	forEachService(project, func(_ string, svc *types.ServiceConfig) {
 		if strings.TrimSpace(svc.NetworkMode) != "" {
@@ -436,12 +472,9 @@ func ensureProjectNetwork(project *types.Project, projectName string) {
 	})
 }
 
-func ensureNetworkDeclared(project *types.Project, netName string) {
+func ensureNetworkDeclared(project *types.Project, netName string, networkMTU int) {
 	ensureNetworksMap(project)
-
-	if _, exists := project.Networks[netName]; !exists {
-		project.Networks[netName] = types.NetworkConfig{} //nolint:exhaustruct_v5 // empty declaration; compose defaults apply
-	}
+	project.Networks[netName] = withBridgeMTU(project.Networks[netName], networkMTU)
 }
 
 func ensureNetworksMap(project *types.Project) {

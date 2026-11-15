@@ -12,10 +12,15 @@ import (
 )
 
 const (
-	netProxy = "apinfra_proxy_net"
-	netShop  = "shop_net"
-	optNoNew = "no-new-privileges:true"
+	netProxy     = "apinfra_proxy_net"
+	netShop      = "shop_net"
+	optNoNew     = "no-new-privileges:true"
+	bridgeMTUOpt = "com.docker.network.driver.mtu"
 )
+
+func networkMTUOf(net map[string]any) string {
+	return fmt.Sprint(asMap(net["driver_opts"])[bridgeMTUOpt])
+}
 
 func portsOf(svc map[string]any) []string {
 	list, _ := svc["ports"].([]any)
@@ -522,6 +527,17 @@ networks:
 				t.Fatalf("%s must be declared: %v", netShop, topNets)
 			}
 
+			shopNet := asMap(topNets[netShop])
+			if shopNet["driver"] != "bridge" || networkMTUOf(shopNet) != "1350" {
+				t.Fatalf("project network = %v", shopNet)
+			}
+
+			if backend, ok := topNets["backend"]; ok {
+				if _, has := asMap(backend)["driver_opts"]; has {
+					t.Fatalf("custom network must not get project MTU: %v", backend)
+				}
+			}
+
 			if tcase.wantAliasFor == "" {
 				if _, ok := topNets[netProxy]; ok {
 					t.Fatalf("proxy net must not be declared without a target: %v", topNets)
@@ -547,6 +563,110 @@ networks:
 
 			if res.ProxyHosts[projShop] != wantAlias {
 				t.Fatalf("ProxyHosts = %v, want %s", res.ProxyHosts, wantAlias)
+			}
+		})
+	}
+}
+
+func TestApply_ProjectNetworkMTU(t *testing.T) {
+	t.Parallel()
+
+	compose := `services:
+  web:
+    image: nginx
+    networks:
+      - backend
+networks:
+  backend: {}
+  shop_net:
+    ipam:
+      config:
+        - subnet: 10.9.0.0/24
+`
+
+	tests := []struct {
+		name       string
+		proxyMTU   int
+		projectMTU int
+		wantProxy  string
+		wantProj   string
+	}{
+		{name: "defaults", proxyMTU: 0, projectMTU: 0, wantProxy: "1350", wantProj: "1350"},
+		{name: "independent", proxyMTU: 1400, projectMTU: 1280, wantProxy: "1400", wantProj: "1280"},
+	}
+
+	for _, tcase := range tests {
+		t.Run(tcase.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newDockerEnvWithConfig(t, docker.Config{
+				ProxyNetworkMTU:   tcase.proxyMTU,
+				ProjectNetworkMTU: tcase.projectMTU,
+			})
+
+			_, err := env.applyAll(t, shopProject(compose))
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+
+			appNets := asMap(appCompose(t, env)["networks"])
+			shopNet := asMap(appNets[netShop])
+
+			if shopNet["driver"] != "bridge" || networkMTUOf(shopNet) != tcase.wantProj {
+				t.Fatalf("project network = %v", shopNet)
+			}
+
+			pools, _ := asMap(shopNet["ipam"])["config"].([]any)
+			if len(pools) != 1 || asMap(pools[0])["subnet"] != "10.9.0.0/24" {
+				t.Fatalf("project ipam = %v", shopNet["ipam"])
+			}
+
+			if _, has := asMap(appNets["backend"])["driver_opts"]; has {
+				t.Fatalf("custom network must not get project MTU: %v", appNets["backend"])
+			}
+
+			proxyDoc := readYAML(t, env.read(t, env.infra+"/docker-compose.yml"))
+			proxyNet := asMap(asMap(proxyDoc["networks"])[netProxy])
+
+			if networkMTUOf(proxyNet) != tcase.wantProxy {
+				t.Fatalf("proxy mtu = %s, want %s", networkMTUOf(proxyNet), tcase.wantProxy)
+			}
+		})
+	}
+}
+
+func TestApply_ProxyNetworkMTU(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mtu  int
+		want string
+	}{
+		{name: "default", mtu: 0, want: "1350"},
+		{name: "from_settings", mtu: 1400, want: "1400"},
+	}
+
+	for _, tcase := range tests {
+		t.Run(tcase.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newDockerEnvWithConfig(t, docker.Config{ProxyNetworkMTU: tcase.mtu})
+
+			_, err := env.applyAll(t, namedProject("app0"))
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+
+			doc := readYAML(t, env.read(t, env.infra+"/docker-compose.yml"))
+			net := asMap(asMap(doc["networks"])[netProxy])
+
+			if net["name"] != netProxy || net["driver"] != "bridge" {
+				t.Fatalf("proxy network = %v", net)
+			}
+
+			if got := networkMTUOf(net); got != tcase.want {
+				t.Fatalf("mtu = %s, want %s; network=%v", got, tcase.want, net)
 			}
 		})
 	}

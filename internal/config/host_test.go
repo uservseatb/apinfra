@@ -70,6 +70,8 @@ func TestLoadHostConfig_Defaults(t *testing.T) {
 		{"NginxCLITimeout", cfg.NginxCLITimeout, 30 * time.Second},
 		{"DomainPrecheckTimeout", cfg.DomainPrecheckTimeout, 15 * time.Second},
 		{"ProxyReadyAfter", cfg.ProxyReadyAfter, 30 * time.Second},
+		{"ProxyNetworkMTU", cfg.ProxyNetworkMTU, 1350},
+		{"ProjectNetworkMTU", cfg.ProjectNetworkMTU, 1350},
 		{"CertIssueTimeout", cfg.CertIssueTimeout, time.Minute},
 		{"CertsProvider", cfg.CertsProvider, config.CertsProviderLetsEncrypt},
 		{"CertsTriesCount", cfg.CertsTriesCount, defaultTries},
@@ -105,6 +107,8 @@ func TestLoadHostConfig_Overrides(t *testing.T) {
 		"certs.downgradeCertModeHours=48",
 		"certs.letsencrypt.directory=https://le.test/dir",
 		"certs.zerossl.directory=https://zs.test/dir",
+		"proxyNetworkMTU=1400",
+		"projectNetworkMTU=1280",
 	}, "\n") + "\n"
 
 	cfg, _, err := loadHost(t, apinfra)
@@ -133,6 +137,8 @@ func TestLoadHostConfig_Overrides(t *testing.T) {
 		{"CertsDowngradeCertModeHours", cfg.CertsDowngradeCertModeHours, 48},
 		{"LetsEncryptDirectory", cfg.LetsEncryptDirectory, "https://le.test/dir"},
 		{"ZeroSSLDirectory", cfg.ZeroSSLDirectory, "https://zs.test/dir"},
+		{"ProxyNetworkMTU", cfg.ProxyNetworkMTU, 1400},
+		{"ProjectNetworkMTU", cfg.ProjectNetworkMTU, 1280},
 	}
 
 	for _, c := range checks {
@@ -159,6 +165,12 @@ func TestLoadHostConfig_Errors(t *testing.T) {
 		{name: "tries_zero", apinfra: minimalHost + "certs.triesCount=0\n", wantErr: "must be > 0"},
 		{name: "block_hours_negative", apinfra: minimalHost + "certs.blockHours=-1\n", wantErr: "must be > 0"},
 		{name: "downgrade_cert_mode_hours_zero", apinfra: minimalHost + "certs.downgradeCertModeHours=0\n", wantErr: "must be > 0"},
+		{name: "proxy_mtu_not_int", apinfra: minimalHost + "proxyNetworkMTU=big\n", wantErr: "proxyNetworkMTU"},
+		{name: "proxy_mtu_zero", apinfra: minimalHost + "proxyNetworkMTU=0\n", wantErr: "must be > 0"},
+		{name: "proxy_mtu_too_small", apinfra: minimalHost + "proxyNetworkMTU=67\n", wantErr: "must be 68..65535"},
+		{name: "proxy_mtu_too_large", apinfra: minimalHost + "proxyNetworkMTU=65536\n", wantErr: "must be 68..65535"},
+		{name: "project_mtu_not_int", apinfra: minimalHost + "projectNetworkMTU=big\n", wantErr: "projectNetworkMTU"},
+		{name: "project_mtu_too_small", apinfra: minimalHost + "projectNetworkMTU=67\n", wantErr: "must be 68..65535"},
 		{name: "provider_unknown", apinfra: minimalHost + "certs.provider=digicert\n", wantErr: "invalid certs.provider"},
 		{name: "zerossl_without_eab", apinfra: minimalHost + "certs.provider=zerossl\n", wantErr: "AcmeKid and certs.zerossl.AcmeHmac are required"},
 		{
@@ -179,13 +191,14 @@ func TestLoadHostConfig_Errors(t *testing.T) {
 }
 
 func TestLoadHostConfig_EmptyValuesFallBackToDefaults(t *testing.T) {
-	cfg, _, err := loadHost(t, minimalHost+"gitTimeout=\ncerts.triesCount=\ncerts.provider=\n")
+	cfg, _, err := loadHost(t, minimalHost+"gitTimeout=\ncerts.triesCount=\ncerts.provider=\nproxyNetworkMTU=\nprojectNetworkMTU=\n")
 	if err != nil {
 		t.Fatalf("LoadHostConfig: %v", err)
 	}
 
 	if cfg.GitTimeout != time.Minute || cfg.CertsTriesCount != defaultTries ||
-		cfg.CertsProvider != config.CertsProviderLetsEncrypt {
+		cfg.CertsProvider != config.CertsProviderLetsEncrypt ||
+		cfg.ProxyNetworkMTU != 1350 || cfg.ProjectNetworkMTU != 1350 {
 		t.Fatalf("empty values must use defaults: %+v", cfg)
 	}
 }

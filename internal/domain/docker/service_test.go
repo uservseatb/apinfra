@@ -113,10 +113,16 @@ type dockerEnv struct {
 func newDockerEnv(t *testing.T) *dockerEnv {
 	t.Helper()
 
-	return newDockerEnvWithTrusted(t, "")
+	return newDockerEnvWithConfig(t, docker.Config{})
 }
 
 func newDockerEnvWithTrusted(t *testing.T, trustedImagesPath string) *dockerEnv {
+	t.Helper()
+
+	return newDockerEnvWithConfig(t, docker.Config{TrustedImagesPath: trustedImagesPath})
+}
+
+func newDockerEnvWithConfig(t *testing.T, cfg docker.Config) *dockerEnv {
 	t.Helper()
 
 	infra := filepath.Join(t.TempDir(), "infra")
@@ -134,7 +140,7 @@ func newDockerEnvWithTrusted(t *testing.T, trustedImagesPath string) *dockerEnv 
 			cli,
 			lister,
 			evs,
-			docker.Config{TrustedImagesPath: trustedImagesPath},
+			cfg,
 		),
 	}
 }
