@@ -19,6 +19,8 @@ const (
 	fileModeOwnerRead  = 0o400
 	dirModePrivate     = 0o700
 	dirModeTraversable = 0o755 // nginx conf parents; not used for secret-bearing app stacks
+	bindAssetFileMode  = fileModeReadable
+	bindAssetDirMode   = dirModeTraversable
 
 	infraEnvFileMode   = fileModeOwnerRead
 	appComposeFileMode = fileModeOwnerRead
@@ -34,7 +36,7 @@ var (
 	appNameFromLabelRE   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 )
 
-// StackFS implements docker.StackFileSystem for the host infra tree.
+// StackFS implements docker.ProxyStackFileSystem and docker.AppStackFileSystem.
 type StackFS struct {
 	infraDir string
 }
@@ -141,6 +143,300 @@ func (f *StackFS) WriteAppStack(projectName, composeContent, envContent string) 
 	)
 
 	return composeChanged || envChanged, nil
+}
+
+// SyncProjectBindAssets writes project-local bind mount files under apps/<name>/
+// (0644 files, 0755 dirs), prunes stale bind assets, and never touches compose/.env/.apply_pending.
+func (f *StackFS) SyncProjectBindAssets(
+	projectName string,
+	files map[string][]byte,
+	dirs map[string]struct{},
+) (string, bool, error) {
+	appDir, err := appDirPath(f.infraDir, projectName)
+	if err != nil {
+		return "", false, fmt.Errorf("project %s: %w", projectName, err)
+	}
+
+	err = ensurePrivateAppDir(appDir)
+	if err != nil {
+		return "", false, fmt.Errorf("project %s: %w", projectName, err)
+	}
+
+	desired, err := normalizeBindAssetFiles(appDir, files)
+	if err != nil {
+		return "", false, fmt.Errorf("project %s: %w", projectName, err)
+	}
+
+	desiredDirs, err := normalizeBindAssetDirs(appDir, dirs)
+	if err != nil {
+		return "", false, fmt.Errorf("project %s: %w", projectName, err)
+	}
+
+	dirsChanged, err := writeBindAssetDirs(appDir, desiredDirs)
+	if err != nil {
+		return "", false, fmt.Errorf("project %s: %w", projectName, err)
+	}
+
+	filesChanged, err := writeBindAssetFiles(appDir, desired)
+	if err != nil {
+		return "", false, fmt.Errorf("project %s: %w", projectName, err)
+	}
+
+	pruned, err := pruneStaleBindAssets(appDir, desired, desiredDirs)
+	if err != nil {
+		return "", false, fmt.Errorf("project %s prune bind assets: %w", projectName, err)
+	}
+
+	changed := dirsChanged || filesChanged || pruned
+	if changed {
+		err = f.MarkApplyPending(projectName)
+		if err != nil {
+			return "", false, err
+		}
+	}
+
+	return appDir, changed, nil
+}
+
+func writeBindAssetDirs(appDir string, dirs map[string]struct{}) (bool, error) {
+	changed := false
+
+	for rel := range dirs {
+		absPath := filepath.Join(appDir, rel)
+
+		_, err := os.Stat(absPath)
+		existed := err == nil
+
+		mkdirErr := os.MkdirAll(absPath, bindAssetDirMode)
+		if mkdirErr != nil {
+			return false, fmt.Errorf("mkdir bind dir %s: %w", rel, mkdirErr)
+		}
+
+		chmodErr := os.Chmod(absPath, bindAssetDirMode)
+		if chmodErr != nil {
+			return false, fmt.Errorf("chmod bind dir %s: %w", rel, chmodErr)
+		}
+
+		if !existed {
+			changed = true
+		}
+	}
+
+	return changed, nil
+}
+
+func writeBindAssetFiles(appDir string, files map[string][]byte) (bool, error) {
+	changed := false
+
+	for rel, content := range files {
+		absPath := filepath.Join(appDir, rel)
+		parent := filepath.Dir(absPath)
+
+		mkdirErr := os.MkdirAll(parent, bindAssetDirMode)
+		if mkdirErr != nil {
+			return false, fmt.Errorf("mkdir for %s: %w", rel, mkdirErr)
+		}
+
+		if parent != appDir {
+			chmodErr := os.Chmod(parent, bindAssetDirMode)
+			if chmodErr != nil {
+				return false, fmt.Errorf("chmod parent for %s: %w", rel, chmodErr)
+			}
+		}
+
+		fileChanged, writeErr := writeFile(absPath, string(content), bindAssetFileMode)
+		if writeErr != nil {
+			return false, fmt.Errorf("write bind asset %s: %w", rel, writeErr)
+		}
+
+		if fileChanged {
+			changed = true
+		}
+	}
+
+	return changed, nil
+}
+
+func normalizeBindAssetFiles(appDir string, files map[string][]byte) (map[string][]byte, error) {
+	out := make(map[string][]byte, len(files))
+
+	for rawPath, content := range files {
+		rel, err := sanitizeBindAssetRel(rawPath)
+		if err != nil {
+			return nil, err
+		}
+
+		abs := filepath.Clean(filepath.Join(appDir, rel))
+		appClean := filepath.Clean(appDir)
+
+		relCheck, relErr := filepath.Rel(appClean, abs)
+		if relErr != nil || !isLocalSubpath(relCheck) {
+			return nil, fmt.Errorf("%w: bind asset %q escapes app dir", errUnsafeProjectName, rawPath)
+		}
+
+		out[rel] = content
+	}
+
+	return out, nil
+}
+
+func sanitizeBindAssetRel(rawPath string) (string, error) {
+	rel := filepath.Clean(strings.TrimSpace(rawPath))
+	rel = strings.TrimPrefix(rel, string(filepath.Separator))
+
+	if rel == "" || rel == "." {
+		return "", fmt.Errorf("%w: empty bind asset path", errUnsafeProjectName)
+	}
+
+	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("%w: unsafe bind asset path %q", errUnsafeProjectName, rawPath)
+	}
+
+	base := filepath.Base(rel)
+	if isReservedAppName(base) && !strings.Contains(rel, string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: reserved bind asset %q", errUnsafeProjectName, rawPath)
+	}
+
+	return rel, nil
+}
+
+func isReservedAppName(name string) bool {
+	switch name {
+	case composeFileName, envFileName, applyPendingName:
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeBindAssetDirs(appDir string, dirs map[string]struct{}) (map[string]struct{}, error) {
+	out := make(map[string]struct{}, len(dirs))
+
+	for rawPath := range dirs {
+		rel, err := sanitizeBindAssetRel(rawPath)
+		if err != nil {
+			return nil, err
+		}
+
+		abs := filepath.Clean(filepath.Join(appDir, rel))
+		appClean := filepath.Clean(appDir)
+
+		relCheck, relErr := filepath.Rel(appClean, abs)
+		if relErr != nil || !isLocalSubpath(relCheck) {
+			return nil, fmt.Errorf("%w: bind dir %q escapes app dir", errUnsafeProjectName, rawPath)
+		}
+
+		out[rel] = struct{}{}
+	}
+
+	return out, nil
+}
+
+func pruneStaleBindAssets(
+	appDir string,
+	desiredFiles map[string][]byte,
+	desiredDirs map[string]struct{},
+) (bool, error) {
+	filesChanged, err := pruneStaleBindFiles(appDir, desiredFiles)
+	if err != nil {
+		return false, err
+	}
+
+	dirsChanged, err := pruneEmptyBindDirs(appDir, desiredDirs)
+	if err != nil {
+		return false, err
+	}
+
+	return filesChanged || dirsChanged, nil
+}
+
+func pruneStaleBindFiles(appDir string, desiredFiles map[string][]byte) (bool, error) {
+	changed := false
+
+	err := filepath.Walk(appDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		if path == appDir || info.IsDir() {
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(appDir, path)
+		if relErr != nil {
+			return fmt.Errorf("rel %s: %w", path, relErr)
+		}
+
+		if isReservedAppName(filepath.Base(rel)) && !strings.Contains(rel, string(filepath.Separator)) {
+			return nil
+		}
+
+		if _, ok := desiredFiles[rel]; ok {
+			return nil
+		}
+
+		// #nosec G122 -- path is under managed appDir; symlinks rejected before sync
+		removeErr := os.Remove(path)
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("remove stale bind asset %s: %w", rel, removeErr)
+		}
+
+		changed = true
+
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("walk bind files: %w", err)
+	}
+
+	return changed, nil
+}
+
+func pruneEmptyBindDirs(appDir string, desiredDirs map[string]struct{}) (bool, error) {
+	changed := false
+
+	err := filepath.Walk(appDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		if path == appDir || info == nil || !info.IsDir() {
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(appDir, path)
+		if relErr != nil {
+			return fmt.Errorf("rel %s: %w", path, relErr)
+		}
+
+		if _, keep := desiredDirs[rel]; keep {
+			return nil
+		}
+
+		entries, readErr := os.ReadDir(path)
+		if readErr != nil {
+			return fmt.Errorf("readdir %s: %w", path, readErr)
+		}
+
+		if len(entries) > 0 {
+			return nil
+		}
+
+		// #nosec G122 -- path is under managed appDir
+		removeErr := os.Remove(path)
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("remove empty bind dir %s: %w", rel, removeErr)
+		}
+
+		changed = true
+
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("walk bind dirs: %w", err)
+	}
+
+	return changed, nil
 }
 
 // MarkApplyPending records that apps/<name> still needs a successful compose up.
@@ -366,4 +662,8 @@ func readExistingFile(filePath string) ([]byte, bool, error) {
 	return orig, readErr == nil, nil
 }
 
-var _ docker.StackFileSystem = (*StackFS)(nil)
+var (
+	_ docker.ProxyStackFileSystem = (*StackFS)(nil)
+	_ docker.AppStackFileSystem   = (*StackFS)(nil)
+	_ docker.StackFileSystem      = (*StackFS)(nil)
+)
