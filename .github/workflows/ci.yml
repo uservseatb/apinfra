@@ -6,15 +6,6 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
-      suite:
-        description: Jobs to run on manual dispatch
-        required: true
-        type: choice
-        options:
-          - e2e
-          - unit
-          - all
-        default: e2e
       apinfra_ref:
         description: Override apinfra ref (empty = branch from "Use workflow from")
         required: false
@@ -34,10 +25,6 @@ permissions:
 jobs:
   unit:
     name: unit
-    if: >
-      github.event_name != 'workflow_dispatch' ||
-      inputs.suite == 'unit' ||
-      inputs.suite == 'all'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -61,15 +48,9 @@ jobs:
   e2e:
     name: e2e
     needs: [unit]
-    # suite=e2e → unit is skipped; always() + skipped allows e2e-only manual runs.
     if: >
-      always() && (
-        (github.event_name == 'workflow_dispatch' && inputs.suite == 'e2e' && needs.unit.result == 'skipped') ||
-        (needs.unit.result == 'success' && (
-          (github.event_name == 'pull_request' && github.event.action == 'opened') ||
-          (github.event_name == 'workflow_dispatch' && inputs.suite == 'all')
-        ))
-      )
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.action == 'opened')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
