@@ -1,4 +1,4 @@
-name: CI
+name: Unit and manual E2E tests
 
 on:
   push:
