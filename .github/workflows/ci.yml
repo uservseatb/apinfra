@@ -6,13 +6,22 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
-      apinfra_ref:
-        description: apinfra branch, tag, or SHA
+      suite:
+        description: Jobs to run on manual dispatch
         required: true
+        type: choice
+        options:
+          - e2e
+          - unit
+          - all
+        default: e2e
+      apinfra_ref:
+        description: Override apinfra ref (empty = branch from "Use workflow from")
+        required: false
         type: string
-        default: main
+        default: ""
       e2e_ref:
-        description: apinfra-e2e branch (empty = same name as apinfra ref, else main)
+        description: Override apinfra-e2e ref (empty = same name as apinfra, else main)
         required: false
         type: string
         default: ""
@@ -25,6 +34,10 @@ permissions:
 jobs:
   unit:
     name: unit
+    if: >
+      github.event_name != 'workflow_dispatch' ||
+      inputs.suite == 'unit' ||
+      inputs.suite == 'all'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -34,7 +47,8 @@ jobs:
       - name: Checkout apinfra
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.apinfra_ref || github.ref }}
+          # Empty apinfra_ref on dispatch → same ref as "Use workflow from".
+          ref: ${{ inputs.apinfra_ref || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -47,9 +61,15 @@ jobs:
   e2e:
     name: e2e
     needs: [unit]
+    # suite=e2e → unit is skipped; always() + skipped allows e2e-only manual runs.
     if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.action == 'opened')
+      always() && (
+        (github.event_name == 'workflow_dispatch' && inputs.suite == 'e2e' && needs.unit.result == 'skipped') ||
+        (needs.unit.result == 'success' && (
+          (github.event_name == 'pull_request' && github.event.action == 'opened') ||
+          (github.event_name == 'workflow_dispatch' && inputs.suite == 'all')
+        ))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -87,6 +107,9 @@ jobs:
               candidate="${{ github.head_ref }}"
             else
               candidate="${{ inputs.apinfra_ref }}"
+              if [[ -z "${candidate}" ]]; then
+                candidate="${{ github.ref_name }}"
+              fi
             fi
           fi
 
@@ -106,7 +129,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: apinfra
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.apinfra_ref || github.ref }}
+          ref: ${{ inputs.apinfra_ref || github.ref }}
 
       - name: Checkout apinfra-e2e
         if: steps.reuse.outputs.reuse != 'true'
