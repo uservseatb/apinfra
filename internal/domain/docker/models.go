@@ -17,6 +17,7 @@ type Project struct {
 	EntryPoint        string // proxy.target.service-name from settings
 	ProxyHost         string // Docker DNS host for nginx proxy_pass (service.apinfra_project)
 	AllowPortsMapping bool   // settings config.allow-ports-mapping; false → strip host ports
+	BindAssets        BindLoad
 }
 
 func (p Project) envPrefix() string {

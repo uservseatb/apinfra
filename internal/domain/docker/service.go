@@ -661,7 +661,7 @@ func (s *Service) writeAppStack(
 	project *Project,
 	hostEnv map[string]string,
 ) (bool, map[string]struct{}, error) {
-	composeProject, sidecar, err := s.prepareProjectCompose(ctx, project, hostEnv)
+	composeProject, sidecar, bindChanged, err := s.prepareProjectCompose(ctx, project, hostEnv)
 	if err != nil {
 		return false, nil, err
 	}
@@ -678,7 +678,7 @@ func (s *Service) writeAppStack(
 		return false, nil, fmt.Errorf("project %s write app stack: %w", project.Name, err)
 	}
 
-	return changed, composeServiceNameSet(composeProject), nil
+	return changed || bindChanged, composeServiceNameSet(composeProject), nil
 }
 
 func composeServiceNameSet(composeProject *types.Project) map[string]struct{} {
@@ -698,15 +698,15 @@ func (s *Service) prepareProjectCompose(
 	ctx context.Context,
 	project *Project,
 	hostEnv map[string]string,
-) (*types.Project, map[string]string, error) {
+) (*types.Project, map[string]string, bool, error) {
 	raw := project.ComposeYAML
 	if strings.TrimSpace(raw) == "" {
-		return nil, nil, fmt.Errorf("project %s: %w", project.Name, errMissingComposePartial)
+		return nil, nil, false, fmt.Errorf("project %s: %w", project.Name, errMissingComposePartial)
 	}
 
 	sidecar, err := projectSidecarEnv(*project)
 	if err != nil {
-		return nil, nil, fmt.Errorf("project %s sidecar .env: %w", project.Name, err)
+		return nil, nil, false, fmt.Errorf("project %s sidecar .env: %w", project.Name, err)
 	}
 
 	envMap := map[string]string{}
@@ -715,17 +715,36 @@ func (s *Service) prepareProjectCompose(
 
 	composeProject, err := loadCompose(ctx, raw, project.Name, envMap, loadMutate)
 	if err != nil {
-		return nil, nil, fmt.Errorf("project %s parse compose: %w", project.Name, err)
+		return nil, nil, false, fmt.Errorf("project %s parse compose: %w", project.Name, err)
 	}
 
 	err = applyPublishedPortsPolicy(composeProject, project.Name, project.AllowPortsMapping)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
-	err = s.validateProjectVolumes(project.Name, composeProject)
+	err = s.validateProjectVolumes(project.Name, composeProject, project.BindAssets)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
+	}
+
+	appDir, bindChanged, err := s.fs.SyncProjectBindAssets(
+		project.Name, project.BindAssets.Files, project.BindAssets.Dirs,
+	)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("project %s sync bind assets: %w", project.Name, err)
+	}
+
+	enforceProjectLocalBinds(composeProject, appDir)
+
+	err = verifyHostBindSources(appDir, composeProject)
+	if err != nil {
+		s.recordSecurityViolation(project.Name, "", err.Error(), reasonDisallowedBindMount, "")
+
+		return nil, nil, false, fmt.Errorf(
+			"project=%s: %w: %w",
+			project.Name, errVolumePolicyViolation, err,
+		)
 	}
 
 	s.rememberTrustedSocks(project.Name, composeProject)
@@ -738,7 +757,7 @@ func (s *Service) prepareProjectCompose(
 	ensureContainerHardening(composeProject)
 	stripCompositionHooks(composeProject)
 
-	return composeProject, sidecar, nil
+	return composeProject, sidecar, bindChanged, nil
 }
 
 func resolveProxyHost(project *Project, composeProject *types.Project) {
@@ -938,7 +957,7 @@ func (s *Service) validateOneProjectCompose(ctx context.Context, project Project
 		return err
 	}
 
-	err = s.validateProjectVolumes(project.Name, composeProject)
+	err = s.validateProjectVolumes(project.Name, composeProject, project.BindAssets)
 	if err != nil {
 		return err
 	}

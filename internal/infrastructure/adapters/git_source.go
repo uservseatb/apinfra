@@ -11,6 +11,7 @@ import (
 
 	"github.com/uservseatb/apinfra/internal/config"
 	"github.com/uservseatb/apinfra/internal/domain/deployment"
+	"github.com/uservseatb/apinfra/internal/domain/docker"
 	"github.com/uservseatb/apinfra/internal/events"
 	"github.com/uservseatb/apinfra/internal/git"
 	"github.com/uservseatb/apinfra/internal/sys"
@@ -76,7 +77,7 @@ func (s *GitConfigSource) LoadWorkspace(ctx context.Context, namespace string) (
 		return nil, fmt.Errorf("read host config: %w", err)
 	}
 
-	projects, err := projectSpecsFromRepo(repo, configs)
+	projects, err := projectSpecsFromRepo(ctx, repo, configs)
 	if err != nil {
 		return nil, fmt.Errorf("read project files: %w", err)
 	}
@@ -127,7 +128,11 @@ func (s *GitConfigSource) cloneAndReadSettings(
 	return repo, configs, nil
 }
 
-func projectSpecsFromRepo(repo *git.Repo, configs []config.ServiceConfig) ([]deployment.ProjectSpec, error) {
+func projectSpecsFromRepo(
+	ctx context.Context,
+	repo *git.Repo,
+	configs []config.ServiceConfig,
+) ([]deployment.ProjectSpec, error) {
 	projects := make([]deployment.ProjectSpec, 0, len(configs))
 
 	for _, cfg := range configs {
@@ -137,6 +142,11 @@ func projectSpecsFromRepo(repo *git.Repo, configs []config.ServiceConfig) ([]dep
 		}
 
 		sidecarEnvRaw, err := readOptionalFile(repo, path.Join(cfg.NamespacePrefix, cfg.Name, sidecarEnvFileName))
+		if err != nil {
+			return nil, fmt.Errorf("project %s: %w", cfg.Name, err)
+		}
+
+		bindAssets, err := loadProjectBindAssets(ctx, repo, cfg.NamespacePrefix, cfg.Name, composeYAML)
 		if err != nil {
 			return nil, fmt.Errorf("project %s: %w", cfg.Name, err)
 		}
@@ -155,10 +165,48 @@ func projectSpecsFromRepo(repo *git.Repo, configs []config.ServiceConfig) ([]dep
 			AllowPortsMapping: cfg.AllowPortsMapping,
 			ComposeYAML:       composeYAML,
 			SidecarEnvRaw:     sidecarEnvRaw,
+			BindAssets:        bindAssets,
 		})
 	}
 
 	return projects, nil
+}
+
+func loadProjectBindAssets(
+	ctx context.Context,
+	repo *git.Repo,
+	namespacePrefix, projectName, composeYAML string,
+) (docker.BindLoad, error) {
+	emptyBindLoad := docker.BindLoad{
+		Files:    nil,
+		Dirs:     nil,
+		Symlinks: nil,
+		Missing:  nil,
+	}
+
+	sources, err := docker.RelativeBindSources(ctx, composeYAML, projectName)
+	if err != nil {
+		// Invalid compose is reported later during ValidateProjects; skip bind preload.
+		return emptyBindLoad, nil //nolint:nilerr // compose parse errors handled downstream
+	}
+
+	if len(sources) == 0 {
+		return emptyBindLoad, nil
+	}
+
+	projectRoot := path.Join(namespacePrefix, projectName)
+
+	loaded, err := repo.LoadBindAssets(projectRoot, sources)
+	if err != nil {
+		return emptyBindLoad, fmt.Errorf("load bind assets: %w", err)
+	}
+
+	return docker.BindLoad{
+		Files:    loaded.Files,
+		Dirs:     loaded.Dirs,
+		Symlinks: loaded.Symlinks,
+		Missing:  loaded.Missing,
+	}, nil
 }
 
 // readOptionalFile returns "" when the file is absent; a read failure on an existing file is an error.

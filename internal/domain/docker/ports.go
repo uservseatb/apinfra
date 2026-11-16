@@ -5,18 +5,33 @@ import (
 	"time"
 )
 
-// StackFileSystem persists proxy and per-app compose stacks on the host infra tree.
-type StackFileSystem interface {
+// ProxyStackFileSystem persists the shared proxy compose stack under infra/.
+type ProxyStackFileSystem interface {
 	WriteProxyCompose(content string) (changed bool, err error)
 	HasProxyApplyPending() (bool, error)
 	ClearProxyApplyPending() error
+}
+
+// AppStackFileSystem persists per-project compose stacks under infra/apps/<name>/.
+type AppStackFileSystem interface {
 	WriteAppStack(projectName, composeContent, envContent string) (changed bool, err error)
-	MarkApplyPending(projectName string) error
+	SyncProjectBindAssets(
+		projectName string,
+		files map[string][]byte,
+		dirs map[string]struct{},
+	) (appDir string, changed bool, err error)
 	HasApplyPending(projectName string) (bool, error)
 	ClearApplyPending(projectName string) error
 	ListAppDirs() ([]string, error)
 	AppComposeExists(projectName string) (bool, error)
 	RemoveAppDir(projectName string) error
+}
+
+// StackFileSystem is the host infra persistence port used by Service.
+// Implemented by infrastructure.StackFS.
+type StackFileSystem interface {
+	ProxyStackFileSystem
+	AppStackFileSystem
 }
 
 // CLIExecutor runs docker compose / login / prune operations with bounded timeouts.

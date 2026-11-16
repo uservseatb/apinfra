@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"path"
 	"strings"
 
@@ -137,6 +139,144 @@ func (r *Repo) Exists(name string) bool {
 	_, err := r.fs.Stat(name)
 
 	return err == nil
+}
+
+// BindAssetLoad is the result of loading project-local bind sources from Git.
+type BindAssetLoad struct {
+	Files    map[string][]byte
+	Dirs     map[string]struct{}
+	Symlinks []string
+	Missing  []string
+}
+
+var errEmptyProjectRoot = errors.New("empty project root")
+
+// LoadBindAssets loads relative bind sources under projectRoot (repo-relative).
+// Symlinks are never followed; any symlink path is recorded in Symlinks.
+// Paths that escape projectRoot are recorded as Missing (not loaded).
+func (r *Repo) LoadBindAssets(projectRoot string, sources []string) (BindAssetLoad, error) {
+	out := BindAssetLoad{ //nolint:exhaustruct_v5 // Symlinks/Missing filled per source
+		Files: map[string][]byte{},
+		Dirs:  map[string]struct{}{},
+	}
+
+	root := cleanPath(projectRoot)
+	if root == "" {
+		return out, errEmptyProjectRoot
+	}
+
+	for _, source := range sources {
+		err := r.loadOneBindSource(root, source, &out)
+		if err != nil {
+			return out, err
+		}
+	}
+
+	return out, nil
+}
+
+func (r *Repo) loadOneBindSource(root, source string, out *BindAssetLoad) error {
+	rel := cleanPath(source)
+	if rel == "" || rel == "." || strings.HasPrefix(rel, "../") || rel == ".." {
+		out.Missing = append(out.Missing, source)
+
+		return nil
+	}
+
+	full := cleanPath(path.Join(root, rel))
+	if full != root && !strings.HasPrefix(full, root+"/") {
+		out.Missing = append(out.Missing, source)
+
+		return nil
+	}
+
+	info, err := r.lstat(full)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, fs.ErrNotExist) {
+			out.Missing = append(out.Missing, rel)
+
+			return nil
+		}
+
+		return fmt.Errorf("lstat %s: %w", full, err)
+	}
+
+	if isSymlinkInfo(info) {
+		out.Symlinks = append(out.Symlinks, rel)
+
+		return nil
+	}
+
+	if info.IsDir() {
+		out.Dirs[rel] = struct{}{}
+
+		return r.walkBindDir(root, full, rel, out)
+	}
+
+	data, err := r.ReadFile(full)
+	if err != nil {
+		return fmt.Errorf("read bind file %s: %w", full, err)
+	}
+
+	out.Files[rel] = data
+
+	return nil
+}
+
+func (r *Repo) walkBindDir(projectRoot, dirFull, dirRel string, out *BindAssetLoad) error {
+	entries, err := r.fs.ReadDir(dirFull)
+	if err != nil {
+		return fmt.Errorf("readdir %s: %w", dirFull, err)
+	}
+
+	for _, entry := range entries {
+		childRel := path.Join(dirRel, entry.Name())
+		childFull := cleanPath(path.Join(projectRoot, childRel))
+
+		info, lerr := r.lstat(childFull)
+		if lerr != nil {
+			return fmt.Errorf("lstat %s: %w", childFull, lerr)
+		}
+
+		if isSymlinkInfo(info) {
+			out.Symlinks = append(out.Symlinks, childRel)
+
+			continue
+		}
+
+		if info.IsDir() {
+			out.Dirs[childRel] = struct{}{}
+
+			err = r.walkBindDir(projectRoot, childFull, childRel, out)
+			if err != nil {
+				return err
+			}
+
+			continue
+		}
+
+		data, readErr := r.ReadFile(childFull)
+		if readErr != nil {
+			return fmt.Errorf("read bind file %s: %w", childFull, readErr)
+		}
+
+		out.Files[childRel] = data
+	}
+
+	return nil
+}
+
+func (r *Repo) lstat(name string) (os.FileInfo, error) {
+	info, err := r.fs.Lstat(cleanPath(name))
+	if err != nil {
+		return nil, fmt.Errorf("lstat %s: %w", name, err)
+	}
+
+	return info, nil
+}
+
+func isSymlinkInfo(info os.FileInfo) bool {
+	return info != nil && info.Mode()&os.ModeSymlink != 0
 }
 
 func recordGitLoginFailed(recorder eventRecorder, repoURL string) {

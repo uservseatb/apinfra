@@ -22,6 +22,7 @@ type ProjectSpec struct {
 	AllowPortsMapping bool
 	ComposeYAML       string
 	SidecarEnvRaw     string
+	BindAssets        docker.BindLoad
 }
 
 // Workspace is the loaded GitOps configuration for one update cycle.

@@ -23,6 +23,7 @@ func TestValidateProjects_VolumePolicyTable(t *testing.T) {
 		name       string
 		compose    string
 		allowlist  []string
+		bindAssets docker.BindLoad
 		wantErr    bool
 		wantReason string
 	}{
@@ -37,14 +38,41 @@ func TestValidateProjects_VolumePolicyTable(t *testing.T) {
 			wantReason: "disallowed_bind_mount",
 		},
 		{
-			name:       "relative_bind_rejected",
+			name:       "relative_bind_missing_assets_rejected",
 			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - ./data:/data\n",
 			wantErr:    true,
 			wantReason: "disallowed_bind_mount",
 		},
 		{
+			name:    "relative_bind_ok_with_assets",
+			compose: "services:\n  app:\n    image: alpine\n    volumes:\n      - ./data:/data\n",
+			bindAssets: docker.BindLoad{
+				Files: map[string][]byte{"data/file.txt": []byte("x")},
+				Dirs:  map[string]struct{}{"data": {}},
+			},
+		},
+		{
 			name:       "parent_relative_bind_rejected",
 			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - ../etc:/etc\n",
+			wantErr:    true,
+			wantReason: "disallowed_bind_mount",
+		},
+		{
+			name:       "project_root_bind_rejected",
+			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - ./:/app\n",
+			wantErr:    true,
+			wantReason: "disallowed_bind_mount",
+		},
+		{
+			name:       "env_metadata_bind_rejected",
+			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - ./.env:/app/.env\n",
+			wantErr:    true,
+			wantReason: "disallowed_bind_mount",
+		},
+		{
+			name:       "symlink_bind_rejected",
+			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - ./link:/data\n",
+			bindAssets: docker.BindLoad{Symlinks: []string{"link"}},
 			wantErr:    true,
 			wantReason: "disallowed_bind_mount",
 		},
@@ -117,6 +145,7 @@ func TestValidateProjects_VolumePolicyTable(t *testing.T) {
 			project := docker.Project{
 				Name:        "app",
 				ComposeYAML: tcase.compose,
+				BindAssets:  tcase.bindAssets,
 			}
 
 			err := svc.ValidateProjects(context.Background(), []docker.Project{project}, nil)

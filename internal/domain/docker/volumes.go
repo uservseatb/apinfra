@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -34,16 +36,38 @@ type trustedSockRef struct {
 	image   string
 }
 
-// validateProjectVolumes allows named volumes only; the sole bind exception is
-// /var/run/docker.sock for digest-pinned images listed in ~/.trusted_images.
-func (s *Service) validateProjectVolumes(projectName string, composeProject *types.Project) error {
+// validateProjectVolumes allows named volumes, trusted docker.sock binds, and
+// project-local relative binds covered by load (no symlinks / missing sources).
+func (s *Service) validateProjectVolumes(
+	projectName string,
+	composeProject *types.Project,
+	load BindLoad,
+) error {
 	if composeProject == nil {
 		return nil
 	}
 
+	for _, path := range load.Symlinks {
+		s.recordSecurityViolation(projectName, "", path, reasonDisallowedBindMount, "")
+
+		return fmt.Errorf(
+			"project=%s: %w: source=%q: %w",
+			projectName, errVolumePolicyViolation, path, errBindSymlinkForbidden,
+		)
+	}
+
+	for _, path := range load.Missing {
+		s.recordSecurityViolation(projectName, "", path, reasonDisallowedBindMount, "")
+
+		return fmt.Errorf(
+			"project=%s: %w: source=%q: %w",
+			projectName, errVolumePolicyViolation, path, errBindSourceMissing,
+		)
+	}
+
 	for serviceName, svc := range composeProject.Services {
 		for _, vol := range svc.Volumes {
-			err := s.validateServiceVolume(projectName, serviceName, svc.Image, vol)
+			err := s.validateServiceVolume(projectName, serviceName, svc.Image, vol, load)
 			if err != nil {
 				return err
 			}
@@ -56,6 +80,7 @@ func (s *Service) validateProjectVolumes(projectName string, composeProject *typ
 func (s *Service) validateServiceVolume(
 	projectName, serviceName, image string,
 	vol types.ServiceVolumeConfig,
+	load BindLoad,
 ) error {
 	source := strings.TrimSpace(vol.Source)
 
@@ -63,7 +88,7 @@ func (s *Service) validateServiceVolume(
 	case types.VolumeTypeVolume:
 		return s.validateNamedVolume(projectName, serviceName, source)
 	case types.VolumeTypeBind:
-		return s.validateBindVolume(projectName, serviceName, image, source)
+		return s.validateBindVolume(projectName, serviceName, image, source, load)
 	default:
 		return s.rejectVolumeType(projectName, serviceName, source, vol.Type)
 	}
@@ -84,6 +109,7 @@ func (s *Service) validateNamedVolume(projectName, serviceName, source string) e
 
 func (s *Service) validateBindVolume(
 	projectName, serviceName, image, source string,
+	load BindLoad,
 ) error {
 	if source == allowedDockerSock {
 		if isImageTrusted(image, s.getTrustedImages()) {
@@ -100,12 +126,35 @@ func (s *Service) validateBindVolume(
 		)
 	}
 
-	s.recordSecurityViolation(projectName, serviceName, source, reasonDisallowedBindMount, "")
+	if filepath.IsAbs(source) {
+		s.recordSecurityViolation(projectName, serviceName, source, reasonDisallowedBindMount, "")
 
-	return fmt.Errorf(
-		"project=%s service=%s: %w: source=%q (host bind mounts are forbidden; use named volumes)",
-		projectName, serviceName, errVolumePolicyViolation, source,
-	)
+		return fmt.Errorf(
+			"project=%s service=%s: %w: source=%q (host bind mounts are forbidden; use named volumes)",
+			projectName, serviceName, errVolumePolicyViolation, source,
+		)
+	}
+
+	rel, err := normalizeProjectLocalBindSource(source)
+	if err != nil {
+		s.recordSecurityViolation(projectName, serviceName, source, reasonDisallowedBindMount, "")
+
+		return fmt.Errorf(
+			"project=%s service=%s: %w: source=%q: %w",
+			projectName, serviceName, errVolumePolicyViolation, source, err,
+		)
+	}
+
+	if !bindAssetCovers(load, rel) {
+		s.recordSecurityViolation(projectName, serviceName, source, reasonDisallowedBindMount, "")
+
+		return fmt.Errorf(
+			"project=%s service=%s: %w: source=%q: %w",
+			projectName, serviceName, errVolumePolicyViolation, source, errBindSourceMissing,
+		)
+	}
+
+	return nil
 }
 
 func (s *Service) rejectVolumeType(projectName, serviceName, source, volType string) error {
@@ -118,9 +167,118 @@ func (s *Service) rejectVolumeType(projectName, serviceName, source, volType str
 
 	return fmt.Errorf(
 		"project=%s service=%s: %w: volume type %q is forbidden "+
-			"(only named volumes and trusted docker.sock binds are allowed)",
+			"(only named volumes, project-local read-only binds, and trusted docker.sock binds are allowed)",
 		projectName, serviceName, errVolumePolicyViolation, typeLabel,
 	)
+}
+
+// enforceProjectLocalBinds rewrites allowed relative binds to absolute paths under
+// projectDir and forces read_only=true (overrides :rw / read_only: false).
+func enforceProjectLocalBinds(composeProject *types.Project, projectDir string) {
+	if composeProject == nil {
+		return
+	}
+
+	for name, svc := range composeProject.Services {
+		changed := false
+
+		for i := range svc.Volumes {
+			vol := &svc.Volumes[i]
+			if vol.Type != types.VolumeTypeBind {
+				continue
+			}
+
+			source := strings.TrimSpace(vol.Source)
+			if source == allowedDockerSock || filepath.IsAbs(source) {
+				continue
+			}
+
+			rel, err := normalizeProjectLocalBindSource(source)
+			if err != nil {
+				continue
+			}
+
+			vol.Source = filepath.Join(projectDir, rel)
+			vol.ReadOnly = true
+			changed = true
+		}
+
+		if changed {
+			composeProject.Services[name] = svc
+		}
+	}
+}
+
+func verifyHostBindSources(projectDir string, composeProject *types.Project) error {
+	if composeProject == nil {
+		return nil
+	}
+
+	for _, svc := range composeProject.Services {
+		for _, vol := range svc.Volumes {
+			if vol.Type != types.VolumeTypeBind {
+				continue
+			}
+
+			source := strings.TrimSpace(vol.Source)
+			if source == allowedDockerSock || !filepath.IsAbs(source) {
+				continue
+			}
+
+			if !strings.HasPrefix(source, projectDir+string(filepath.Separator)) && source != projectDir {
+				continue
+			}
+
+			err := rejectSymlinksInHostPath(source)
+			if err != nil {
+				return err
+			}
+
+			_, err = os.Lstat(source)
+			if err != nil {
+				return fmt.Errorf("bind source %q: %w", source, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func rejectSymlinksInHostPath(root string) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("lstat %s: %w", root, err)
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: %s", errBindSymlinkForbidden, root)
+	}
+
+	if !info.IsDir() {
+		return nil
+	}
+
+	err = filepath.Walk(root, func(path string, _ os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		entry, lerr := os.Lstat(path)
+		if lerr != nil {
+			return fmt.Errorf("lstat %s: %w", path, lerr)
+		}
+
+		if entry.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: %s", errBindSymlinkForbidden, path)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("walk bind source %s: %w", root, err)
+	}
+
+	return nil
 }
 
 func collectTrustedSockRefs(composeProject *types.Project) []trustedSockRef {

@@ -181,6 +181,7 @@ func toDockerProjects(specs []ProjectSpec) []docker.Project {
 			EntryPoint:        spec.EntryPoint,
 			ProxyHost:         "",
 			AllowPortsMapping: spec.AllowPortsMapping,
+			BindAssets:        spec.BindAssets,
 		})
 	}
 

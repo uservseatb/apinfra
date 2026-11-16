@@ -1220,6 +1220,65 @@ func TestApply_RejectsTmpfsBeforeUp(t *testing.T) {
 	}
 }
 
+func TestApply_ProjectLocalBindForcedReadOnly(t *testing.T) {
+	t.Parallel()
+
+	env := newDockerEnv(t)
+	project := shopProject(`services:
+  web:
+    image: nginx:1.30-alpine
+    volumes:
+      - ./config.txt:/etc/app/config.txt:rw
+      - type: bind
+        source: ./extra.txt
+        target: /etc/app/extra.txt
+        read_only: false
+`)
+	project.EntryPoint = ""
+	project.BindAssets = docker.BindLoad{
+		Files: map[string][]byte{
+			"config.txt": []byte("cfg"),
+			"extra.txt":  []byte("extra"),
+		},
+	}
+
+	_, err := env.applyAll(t, project)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	composePath := filepath.Join(env.infra, "apps", projShop, "docker-compose.yml")
+
+	raw, readErr := os.ReadFile(composePath)
+	if readErr != nil {
+		t.Fatalf("read compose: %v", readErr)
+	}
+
+	text := string(raw)
+	if !strings.Contains(text, "read_only: true") {
+		t.Fatalf("expected forced read_only in compose, got:\n%s", text)
+	}
+
+	if !strings.Contains(text, filepath.Join(env.infra, "apps", projShop, "config.txt")) {
+		t.Fatalf("expected absolute config.txt bind, got:\n%s", text)
+	}
+
+	if !strings.Contains(text, filepath.Join(env.infra, "apps", projShop, "extra.txt")) {
+		t.Fatalf("expected absolute extra.txt bind, got:\n%s", text)
+	}
+
+	cfgPath := filepath.Join(env.infra, "apps", projShop, "config.txt")
+
+	info, statErr := os.Stat(cfgPath)
+	if statErr != nil {
+		t.Fatalf("stat config.txt: %v", statErr)
+	}
+
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("config.txt mode = %o, want 0644", info.Mode().Perm())
+	}
+}
+
 func TestValidateProjects_RejectsTmpfs(t *testing.T) {
 	t.Parallel()
 
