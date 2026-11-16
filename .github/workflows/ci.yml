@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      apinfra_ref:
+        description: apinfra branch, tag, or SHA
+        required: true
+        type: string
+        default: main
+      e2e_ref:
+        description: apinfra-e2e branch (empty = same name as apinfra ref, else main)
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  checks: read
+  actions: read
+
+jobs:
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: unit-${{ github.event.pull_request.head.sha || github.sha }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout apinfra
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.apinfra_ref || github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Unit tests
+        run: go test -race -count=1 ./...
+
+  e2e:
+    name: e2e
+    needs: [unit]
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.action == 'opened')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Reuse successful e2e on same head SHA
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SHA="${{ github.event.pull_request.head.sha }}"
+          echo "Looking for successful e2e check on ${SHA}"
+          count="$(gh api --paginate "repos/${{ github.repository }}/commits/${SHA}/check-runs" \
+            --jq '[.check_runs[] | select(.name == "e2e" and .status == "completed" and .conclusion == "success")] | length')"
+          if [[ "${count}" -gt 0 ]]; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+            echo "Reusing successful e2e for ${SHA}"
+          else
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            echo "No successful e2e check on ${SHA}; will run suite"
+          fi
+
+      - name: Resolve apinfra-e2e ref
+        if: steps.reuse.outputs.reuse != 'true'
+        id: e2e_ref
+        run: |
+          set -euo pipefail
+          candidate="${{ inputs.e2e_ref }}"
+          if [[ -z "${candidate}" ]]; then
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              candidate="${{ github.head_ref }}"
+            else
+              candidate="${{ inputs.apinfra_ref }}"
+            fi
+          fi
+
+          repo="https://github.com/uservseatb/apinfra-e2e.git"
+          if git ls-remote --exit-code --heads "${repo}" "${candidate}" >/dev/null 2>&1; then
+            ref="${candidate}"
+          else
+            echo "Branch ${candidate@Q} not found in apinfra-e2e; falling back to main"
+            ref="main"
+          fi
+
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "Using apinfra-e2e ref: ${ref}"
+
+      - name: Checkout apinfra
+        if: steps.reuse.outputs.reuse != 'true'
+        uses: actions/checkout@v4
+        with:
+          path: apinfra
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.apinfra_ref || github.ref }}
+
+      - name: Checkout apinfra-e2e
+        if: steps.reuse.outputs.reuse != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: uservseatb/apinfra-e2e
+          path: apinfra-e2e
+          ref: ${{ steps.e2e_ref.outputs.ref }}
+
+      - name: Set up Go
+        if: steps.reuse.outputs.reuse != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apinfra/go.mod
+
+      - name: Build Linux apinfra binary
+        if: steps.reuse.outputs.reuse != 'true'
+        working-directory: apinfra
+        run: |
+          set -euo pipefail
+          go build -ldflags "-w -s -X main.Version=${GITHUB_SHA}" -o bin/apinfra ./cmd
+          mkdir -p ../apinfra-e2e/bin
+          cp bin/apinfra ../apinfra-e2e/bin/apinfra
+          chmod 0755 ../apinfra-e2e/bin/apinfra
+
+      - name: Pre-pull e2e fixture images
+        if: steps.reuse.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          pull_with_retry() {
+            local image="$1"
+            local attempt
+            for attempt in 1 2 3; do
+              if docker pull "${image}"; then
+                return 0
+              fi
+              echo "docker pull ${image} failed (attempt ${attempt}/3); retrying..." >&2
+              sleep $((attempt * 2))
+            done
+            echo "docker pull ${image} failed after retries" >&2
+            return 1
+          }
+          pull_with_retry alpine:latest
+          pull_with_retry hashicorp/http-echo:latest
+
+      - name: Install pebble
+        if: steps.reuse.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          go install github.com/letsencrypt/pebble/v2/cmd/pebble@v2.10.1
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+          pebble -version || true
+
+      - name: Run e2e tests
+        if: steps.reuse.outputs.reuse != 'true'
+        working-directory: apinfra-e2e
+        run: go test -count=1 -parallel 1 -v ./...
