@@ -116,7 +116,7 @@ func newHostConfig(t *testing.T, repoURL string) *config.HostConfig {
 func loadWorkspace(t *testing.T, cfg *config.HostConfig, namespace string) (*deployment.Workspace, error) {
 	t.Helper()
 
-	source := adapters.NewGitConfigSource(cfg, events.NewFileStore(filepath.Join(t.TempDir(), ".events")))
+	source := adapters.NewGitConfigSource(cfg, events.NewPublisher(filepath.Join(t.TempDir(), ".events")))
 
 	workspace, err := source.LoadWorkspace(t.Context(), namespace)
 	if err != nil {

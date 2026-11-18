@@ -44,20 +44,24 @@ func readEvents(t *testing.T, path string) []map[string]string {
 	return out
 }
 
-func TestFileStore_Write_AppendsJSONLWithReservedKeysProtected(t *testing.T) {
+func TestPublisher_AddEvent_AppendsJSONLWithReservedKeysProtected(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), ".events")
-	store := events.NewFileStore(path)
+	pub := events.NewPublisher(path)
 
-	err := store.Write("git_login_failed", map[string]string{"repo": "r", "kind": "forged", "ts": "forged"})
+	err := pub.AddEvent(events.GitLoginFailed, map[string]string{
+		events.FieldRepo: "r",
+		"type":           "forged",
+		"ts":             "forged",
+	})
 	if err != nil {
-		t.Fatalf("Write #1: %v", err)
+		t.Fatalf("AddEvent #1: %v", err)
 	}
 
-	err = store.Write("nginx_reload_failed", nil)
+	err = pub.AddEvent(events.CertIssueFailed, nil)
 	if err != nil {
-		t.Fatalf("Write #2: %v", err)
+		t.Fatalf("AddEvent #2: %v", err)
 	}
 
 	got := readEvents(t, path)
@@ -65,7 +69,7 @@ func TestFileStore_Write_AppendsJSONLWithReservedKeysProtected(t *testing.T) {
 		t.Fatalf("want 2 events, got %d", len(got))
 	}
 
-	if got[0]["kind"] != "git_login_failed" || got[0]["repo"] != "r" {
+	if got[0]["type"] != events.GitLoginFailed || got[0][events.FieldRepo] != "r" {
 		t.Fatalf("first event = %v", got[0])
 	}
 
@@ -73,7 +77,7 @@ func TestFileStore_Write_AppendsJSONLWithReservedKeysProtected(t *testing.T) {
 		t.Fatalf("ts must be generated, got %q", got[0]["ts"])
 	}
 
-	if got[1]["kind"] != "nginx_reload_failed" {
+	if got[1]["type"] != events.CertIssueFailed {
 		t.Fatalf("second event = %v", got[1])
 	}
 
@@ -87,13 +91,13 @@ func TestFileStore_Write_AppendsJSONLWithReservedKeysProtected(t *testing.T) {
 	}
 }
 
-func TestFileStore_Write_ConcurrentWritersKeepLinesIntact(t *testing.T) {
+func TestPublisher_AddEvent_ConcurrentWritersKeepLinesIntact(t *testing.T) {
 	t.Parallel()
 
 	const writers = 20
 
 	path := filepath.Join(t.TempDir(), ".events")
-	store := events.NewFileStore(path)
+	pub := events.NewPublisher(path)
 
 	var pending sync.WaitGroup
 
@@ -101,7 +105,7 @@ func TestFileStore_Write_ConcurrentWritersKeepLinesIntact(t *testing.T) {
 
 	for idx := range writers {
 		pending.Go(func() {
-			errs <- store.Write("tick", map[string]string{"n": strconv.Itoa(idx)})
+			errs <- pub.AddEvent("tick", map[string]string{"n": strconv.Itoa(idx)})
 		})
 	}
 
@@ -110,7 +114,7 @@ func TestFileStore_Write_ConcurrentWritersKeepLinesIntact(t *testing.T) {
 
 	for err := range errs {
 		if err != nil {
-			t.Fatalf("Write: %v", err)
+			t.Fatalf("AddEvent: %v", err)
 		}
 	}
 
@@ -119,19 +123,19 @@ func TestFileStore_Write_ConcurrentWritersKeepLinesIntact(t *testing.T) {
 	}
 }
 
-func TestFileStore_Write_NilStoreAndBadPath(t *testing.T) {
+func TestPublisher_AddEvent_NilPublisherAndBadPath(t *testing.T) {
 	t.Parallel()
 
-	var nilStore *events.FileStore
+	var nilPub *events.Publisher
 
-	err := nilStore.Write("noop", nil)
+	err := nilPub.AddEvent("noop", nil)
 	if err != nil {
-		t.Fatalf("nil store must be a no-op, got %v", err)
+		t.Fatalf("nil publisher must be a no-op, got %v", err)
 	}
 
-	bad := events.NewFileStore(filepath.Join(t.TempDir(), "missing", ".events"))
+	bad := events.NewPublisher(filepath.Join(t.TempDir(), "missing", ".events"))
 
-	err = bad.Write("x", nil)
+	err = bad.AddEvent("x", nil)
 	if err == nil {
 		t.Fatal("want error for unwritable path")
 	}

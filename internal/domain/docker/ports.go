@@ -52,5 +52,5 @@ type ContainerLister interface {
 
 // EventRecorder records operational events (e.g. registry login failures).
 type EventRecorder interface {
-	Write(kind string, fields map[string]string) error
+	AddEvent(eventType string, fields map[string]string) error
 }

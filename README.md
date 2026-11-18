@@ -701,7 +701,7 @@ Allowed `cert-issue-type` values depend on the inbound routing mode:
 
 ## Events
 
-Operational events are appended as JSON Lines to `~/.events` (for user `ap`: `/home/ap/.events`). Each line is a JSON object with `ts` (UTC RFC3339), `kind`, and event-specific string fields. The agent never fails the systemd timer unit for these soft errors; each case aborts or degrades only the relevant part of the cycle.
+Operational events are appended as JSON Lines to `~/.events` (for user `ap`: `/home/ap/.events`). Each line is a JSON object with `ts` (UTC RFC3339), `type`, and event-specific string fields. The agent never fails the systemd timer unit for these soft errors; each case aborts or degrades only the relevant part of the cycle.
 
 | Event | When | Fields | Effect |
 | :--- | :--- | :--- | :--- |

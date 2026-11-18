@@ -26,5 +26,5 @@ type AcmeClient interface {
 
 // EventRecorder records operational certificate events.
 type EventRecorder interface {
-	Write(kind string, fields map[string]string) error
+	AddEvent(eventType string, fields map[string]string) error
 }

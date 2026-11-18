@@ -17,6 +17,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/storage/memory"
+	"github.com/uservseatb/apinfra/internal/events"
 	"github.com/uservseatb/apinfra/internal/sys"
 )
 
@@ -28,12 +29,10 @@ var (
 	errAuth = errors.New("git authentication failed")
 )
 
-const eventGitLoginFailed = "git_login_failed"
-
-// eventRecorder records operational events (app passes *events.FileStore).
-// git does not import the events package.
+// eventRecorder records operational events (app wires events.Publisher).
+// git does not import the events package for the publisher concrete type.
 type eventRecorder interface {
-	Write(kind string, fields map[string]string) error
+	AddEvent(eventType string, fields map[string]string) error
 }
 
 // Repo is an in-memory checkout of a remote config repository.
@@ -284,7 +283,7 @@ func recordGitLoginFailed(recorder eventRecorder, repoURL string) {
 		return
 	}
 
-	_ = recorder.Write(eventGitLoginFailed, map[string]string{"repo": repoURL})
+	_ = recorder.AddEvent(events.GitLoginFailed, map[string]string{events.FieldRepo: repoURL})
 }
 
 func isAuthError(err error) bool {

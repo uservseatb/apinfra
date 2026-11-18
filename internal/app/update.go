@@ -62,7 +62,7 @@ func LogRunSeparator() {
 }
 
 func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
-	eventStore := newEventStore()
+	eventPublisher := newEventPublisher()
 
 	cliRunner := adapters.NewCliRunner(cfg.InfraDirPath, cfg.UseExecLogs)
 	stackFS := infrastructure.NewStackFS(cfg.InfraDirPath)
@@ -70,11 +70,11 @@ func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
 	layout := infrastructure.NewLayout(cfg.InfraDirPath)
 	yamlRepo := adapters.NewYamlStateRepository(cfg.InfraDirPath, sys.FileWriter{})
 	acmeBridge := adapters.NewAcmeBridge(newACMEClient(cfg), cfg.InfraDirPath)
-	gitSource := adapters.NewGitConfigSource(cfg, eventStore)
+	gitSource := adapters.NewGitConfigSource(cfg, eventPublisher)
 
 	var eventRecorder certmanagement.EventRecorder
-	if eventStore != nil {
-		eventRecorder = eventStore
+	if eventPublisher != nil {
+		eventRecorder = eventPublisher
 	}
 
 	certService := certmanagement.NewCertificateService(
@@ -90,8 +90,8 @@ func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
 	certIssuer := adapters.NewCertIssuerBridge(certService)
 
 	var dockerEvents docker.EventRecorder
-	if eventStore != nil {
-		dockerEvents = eventStore
+	if eventPublisher != nil {
+		dockerEvents = eventPublisher
 	}
 
 	dockerService := docker.NewService(
@@ -144,7 +144,7 @@ func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
 	}
 }
 
-func newEventStore() *events.FileStore {
+func newEventPublisher() *events.Publisher {
 	path, err := events.DefaultPath()
 	if err != nil {
 		log.Printf("[update] WARN events path: %v", err)
@@ -152,7 +152,7 @@ func newEventStore() *events.FileStore {
 		return nil
 	}
 
-	return events.NewFileStore(path)
+	return events.NewPublisher(path)
 }
 
 func newACMEClient(cfg *config.HostConfig) *acme.Client {

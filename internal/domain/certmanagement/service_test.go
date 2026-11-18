@@ -119,7 +119,7 @@ func newCertEnv(t *testing.T, acme *fakeAcme) *certEnv {
 	svc := certmanagement.NewCertificateService(
 		repo,
 		acme,
-		events.NewFileStore(eventsPath),
+		events.NewPublisher(eventsPath),
 		certmanagement.CertRetryPolicy{
 			TriesCount:           testTries,
 			BlockDuration:        testBlockHours * time.Hour,
@@ -197,7 +197,7 @@ func (e *certEnv) events(t *testing.T) []map[string]string {
 func eventKinds(evs []map[string]string) []string {
 	kinds := make([]string, 0, len(evs))
 	for _, ev := range evs {
-		kinds = append(kinds, ev["kind"])
+		kinds = append(kinds, ev["type"])
 	}
 
 	return kinds
@@ -290,7 +290,7 @@ func TestEnsureCertificate_Outcomes(t *testing.T) {
 			wantErr:       errTestRateLimited,
 			wantPrimary:   []string{certmanagement.ModeProd},
 			wantDowngrade: certmanagement.ModeTest,
-			wantEvents:    []string{"cert_rate_limited"},
+			wantEvents:    []string{events.CertRateLimited},
 		},
 		{
 			name:      "rate_limit_both_cas_downgrades",
@@ -307,7 +307,7 @@ func TestEnsureCertificate_Outcomes(t *testing.T) {
 			wantPrimary:   []string{certmanagement.ModeProd},
 			wantSecondary: []string{certmanagement.ModeProd},
 			wantDowngrade: certmanagement.ModeTest,
-			wantEvents:    []string{"cert_rate_limited"},
+			wantEvents:    []string{events.CertRateLimited},
 		},
 		{
 			name:      "rate_limit_secondary_other_error_still_downgrades",
@@ -324,7 +324,7 @@ func TestEnsureCertificate_Outcomes(t *testing.T) {
 			wantPrimary:   []string{certmanagement.ModeProd},
 			wantSecondary: []string{certmanagement.ModeProd},
 			wantDowngrade: certmanagement.ModeTest,
-			wantEvents:    []string{"cert_rate_limited"},
+			wantEvents:    []string{events.CertRateLimited},
 		},
 		{
 			name:      "rate_limit_test_downgrades_to_mock",
@@ -338,7 +338,7 @@ func TestEnsureCertificate_Outcomes(t *testing.T) {
 			wantErr:       errTestRateLimited,
 			wantPrimary:   []string{certmanagement.ModeTest},
 			wantDowngrade: certmanagement.ModeMock,
-			wantEvents:    []string{"cert_rate_limited"},
+			wantEvents:    []string{events.CertRateLimited},
 		},
 		{
 			name:      "rate_limit_mock_downgrades_to_none",
@@ -352,7 +352,7 @@ func TestEnsureCertificate_Outcomes(t *testing.T) {
 			wantErr:       errTestRateLimited,
 			wantPrimary:   []string{certmanagement.ModeMock},
 			wantDowngrade: certmanagement.ModeNone,
-			wantEvents:    []string{"cert_rate_limited"},
+			wantEvents:    []string{events.CertRateLimited},
 		},
 	}
 
@@ -432,7 +432,7 @@ func TestEnsureCertificate_RateLimitEventFields(t *testing.T) {
 		t.Fatalf("events = %v", evs)
 	}
 
-	want := map[string]string{"kind": "cert_rate_limited", "domain": testDomain, "from": "prod", "to": "test"}
+	want := map[string]string{"type": events.CertRateLimited, "domain": testDomain, "from": "prod", "to": "test"}
 	for key, val := range want {
 		if evs[0][key] != val {
 			t.Fatalf("event[%s] = %q, want %q (event=%v)", key, evs[0][key], val, evs[0])
@@ -457,7 +457,7 @@ func TestEnsureCertificate_RateLimitMockEventFields(t *testing.T) {
 		t.Fatalf("events = %v", evs)
 	}
 
-	want := map[string]string{"kind": "cert_rate_limited", "domain": testDomain, "from": "mock", "to": "none"}
+	want := map[string]string{"type": events.CertRateLimited, "domain": testDomain, "from": "mock", "to": "none"}
 	for key, val := range want {
 		if evs[0][key] != val {
 			t.Fatalf("event[%s] = %q, want %q (event=%v)", key, evs[0][key], val, evs[0])
@@ -723,7 +723,7 @@ func TestEnsureCertificate_RetryAndBlock(t *testing.T) {
 	}
 
 	evs := env.events(t)
-	if len(evs) != 1 || evs[0]["kind"] != "cert_issue_failed" || evs[0]["domain"] != testDomain ||
+	if len(evs) != 1 || evs[0]["type"] != events.CertIssueFailed || evs[0]["domain"] != testDomain ||
 		evs[0]["mode"] != certmanagement.ModeProd || evs[0]["attempts"] != "3" {
 		t.Fatalf("events = %v", evs)
 	}

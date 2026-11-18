@@ -227,7 +227,7 @@ func newRouteEnv(t *testing.T) *routeEnv {
 	dns := &fakeDNS{ips: []string{"127.0.0.1"}}
 
 	certSvc := certmanagement.NewCertificateService(
-		repo, acme, events.NewFileStore(filepath.Join(home, ".events")),
+		repo, acme, events.NewPublisher(filepath.Join(home, ".events")),
 		certmanagement.CertRetryPolicy{TriesCount: 3, BlockDuration: time.Hour, DowngradeCertModeTTL: 6 * time.Hour},
 	)
 

@@ -82,6 +82,7 @@ Do not commit binaries, coverage artifacts, or `vendor/` unless explicitly reque
 - Keep functions small; prefer early returns over deep nesting.
 - Pass `context.Context` as the first parameter for I/O, RPC, and long-running work.
 - Avoid global mutable state; wire dependencies explicitly (constructors / `New...`).
+- **Cross-package collaboration via consumer interfaces**: Do not depend on concrete types from sibling/neighbor packages for collaboration. Define small interfaces at the **consumer**; wire implementations only in the composition root (`internal/app`, `cmd`, `main`). Exception: tests may construct a real concrete (e.g. `events.NewPublisher` against a temp path) when asserting on real side effects.
 - Do not add comments that restate the code. Prefer short comments **above methods/types** only. Inline comments are rare — only for genuinely non-obvious / hard-to-read intent (security traps, loader quirks, etc.). Never narrate what the next few lines do.
 - Match existing style once code exists; until then, follow Effective Go and the standard library.
 - **Multi-way branches → `switch`**: An `if` / `else` with only two outcomes is fine. When a decision has **more than two branches** (`if` / `else if` / `else`, or mutually exclusive early returns / type assertions that encode 3+ alternatives for the same value), use `switch` / `switch {` / type-`switch` instead of an if-ladder. Independent sequential guards (`if err != nil`, then `if x == nil`) stay as separate `if`s.

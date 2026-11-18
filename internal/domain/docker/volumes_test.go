@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/uservseatb/apinfra/internal/domain/docker"
+	"github.com/uservseatb/apinfra/internal/events"
 	"github.com/uservseatb/apinfra/internal/infrastructure"
 )
 
@@ -35,13 +36,13 @@ func TestValidateProjects_VolumePolicyTable(t *testing.T) {
 			name:       "root_bind_rejected",
 			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - /:/host\n",
 			wantErr:    true,
-			wantReason: "disallowed_bind_mount",
+			wantReason: events.ReasonDisallowedBindMount,
 		},
 		{
 			name:       "relative_bind_missing_assets_rejected",
 			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - ./data:/data\n",
 			wantErr:    true,
-			wantReason: "disallowed_bind_mount",
+			wantReason: events.ReasonDisallowedBindMount,
 		},
 		{
 			name:    "relative_bind_ok_with_assets",
@@ -55,26 +56,26 @@ func TestValidateProjects_VolumePolicyTable(t *testing.T) {
 			name:       "parent_relative_bind_rejected",
 			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - ../etc:/etc\n",
 			wantErr:    true,
-			wantReason: "disallowed_bind_mount",
+			wantReason: events.ReasonDisallowedBindMount,
 		},
 		{
 			name:       "project_root_bind_rejected",
 			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - ./:/app\n",
 			wantErr:    true,
-			wantReason: "disallowed_bind_mount",
+			wantReason: events.ReasonDisallowedBindMount,
 		},
 		{
 			name:       "env_metadata_bind_rejected",
 			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - ./.env:/app/.env\n",
 			wantErr:    true,
-			wantReason: "disallowed_bind_mount",
+			wantReason: events.ReasonDisallowedBindMount,
 		},
 		{
 			name:       "symlink_bind_rejected",
 			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - ./link:/data\n",
 			bindAssets: docker.BindLoad{Symlinks: []string{"link"}},
 			wantErr:    true,
-			wantReason: "disallowed_bind_mount",
+			wantReason: events.ReasonDisallowedBindMount,
 		},
 		{
 			name:       "sock_without_digest_rejected",
@@ -109,13 +110,13 @@ func TestValidateProjects_VolumePolicyTable(t *testing.T) {
 			name:       "tmpfs_rejected",
 			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - type: tmpfs\n        target: /tmp\n",
 			wantErr:    true,
-			wantReason: "disallowed_volume_type",
+			wantReason: events.ReasonDisallowedVolumeType,
 		},
 		{
 			name:       "image_volume_rejected",
 			compose:    "services:\n  app:\n    image: alpine\n    volumes:\n      - type: image\n        source: alpine\n        target: /data\n",
 			wantErr:    true,
-			wantReason: "disallowed_volume_type",
+			wantReason: events.ReasonDisallowedVolumeType,
 		},
 	}
 
@@ -154,7 +155,7 @@ func TestValidateProjects_VolumePolicyTable(t *testing.T) {
 					t.Fatal("expected error")
 				}
 
-				if len(evs.got) != 1 || evs.got[0].kind != "security_violation" {
+				if len(evs.got) != 1 || evs.got[0].kind != events.SecurityViolation {
 					t.Fatalf("events = %+v, want one security_violation", evs.got)
 				}
 

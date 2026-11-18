@@ -6,18 +6,8 @@ import (
 	"log"
 	"strconv"
 	"time"
-)
 
-const (
-	eventCertRateLimited = "cert_rate_limited"
-	eventCertIssueFailed = "cert_issue_failed"
-
-	eventFieldDomain       = "domain"
-	eventFieldFrom         = "from"
-	eventFieldTo           = "to"
-	eventFieldAttempts     = "attempts"
-	eventFieldMode         = "mode"
-	eventFieldBlockedUntil = "blocked_until"
+	"github.com/uservseatb/apinfra/internal/events"
 )
 
 // CertificateService wraps ACME issuance with blocked / downgrade / fallback / retry policy.
@@ -268,37 +258,37 @@ func (s *CertificateService) handleFailure(domain, mode string, now time.Time, c
 	blockedUntil := now.Add(s.retryPolicy.BlockDuration).Format(CertTimeLayout)
 	log.Printf("[acme] cert issue blocked domain=%s after %d attempts until=%s", domain, attempts, blockedUntil)
 
-	s.writeEvent(eventCertIssueFailed, map[string]string{
-		eventFieldDomain:       domain,
-		eventFieldAttempts:     strconv.Itoa(attempts),
-		eventFieldMode:         mode,
-		eventFieldBlockedUntil: blockedUntil,
+	s.writeEvent(events.CertIssueFailed, map[string]string{
+		events.FieldDomain:       domain,
+		events.FieldAttempts:     strconv.Itoa(attempts),
+		events.FieldMode:         mode,
+		events.FieldBlockedUntil: blockedUntil,
 	})
 }
 
 func (s *CertificateService) writeRateLimitedEvent(domain, from, to string) {
-	s.writeEvent(eventCertRateLimited, map[string]string{
-		eventFieldDomain: domain,
-		eventFieldFrom:   from,
-		eventFieldTo:     to,
+	s.writeEvent(events.CertRateLimited, map[string]string{
+		events.FieldDomain: domain,
+		events.FieldFrom:   from,
+		events.FieldTo:     to,
 	})
 }
 
-func (s *CertificateService) writeEvent(kind string, fields map[string]string) {
+func (s *CertificateService) writeEvent(eventType string, fields map[string]string) {
 	if s.events == nil {
-		log.Printf("[acme] WARN skip event kind=%s domain=%s (events store nil)", kind, fields[eventFieldDomain])
+		log.Printf("[acme] WARN skip event type=%s domain=%s (events publisher nil)", eventType, fields[events.FieldDomain])
 
 		return
 	}
 
-	err := s.events.Write(kind, fields)
+	err := s.events.AddEvent(eventType, fields)
 	if err != nil {
-		log.Printf("[acme] WARN write %s event for %s: %v", kind, fields[eventFieldDomain], err)
+		log.Printf("[acme] WARN write %s event for %s: %v", eventType, fields[events.FieldDomain], err)
 
 		return
 	}
 
-	log.Printf("[acme] event written kind=%s domain=%s", kind, fields[eventFieldDomain])
+	log.Printf("[acme] event written type=%s domain=%s", eventType, fields[events.FieldDomain])
 }
 
 func (s *CertificateService) retryBlocked(domain string, now time.Time) (bool, error) {

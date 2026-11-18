@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/uservseatb/apinfra/internal/events"
 	"github.com/uservseatb/apinfra/internal/git"
 )
 
@@ -211,15 +212,14 @@ func TestLoad_Errors(t *testing.T) {
 }
 
 const (
-	testToken       = "ghp_test_token" //nolint:gosec // fake fixture, not a credential
-	tokenUser       = "x-access-token"
-	authFailedMsg   = "git authentication failed"
-	loginFailedKind = "git_login_failed"
+	testToken     = "ghp_test_token" //nolint:gosec // fake fixture, not a credential
+	tokenUser     = "x-access-token"
+	authFailedMsg = "git authentication failed"
 )
 
 type recordedEvent struct {
-	kind   string
-	fields map[string]string
+	eventType string
+	fields    map[string]string
 }
 
 type fakeRecorder struct {
@@ -227,11 +227,11 @@ type fakeRecorder struct {
 	events []recordedEvent
 }
 
-func (r *fakeRecorder) Write(kind string, fields map[string]string) error {
+func (r *fakeRecorder) AddEvent(eventType string, fields map[string]string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.events = append(r.events, recordedEvent{kind: kind, fields: fields})
+	r.events = append(r.events, recordedEvent{eventType: eventType, fields: fields})
 
 	return nil
 }
@@ -337,9 +337,9 @@ func TestLoad_OverHTTP_TokenAuthentication(t *testing.T) {
 
 			switch {
 			case tcase.wantEvent && len(got) != 1:
-				t.Fatalf("want exactly one %s event, got %v", loginFailedKind, got)
-			case tcase.wantEvent && (got[0].kind != loginFailedKind || got[0].fields["repo"] != repoURL):
-				t.Fatalf("event = %+v, want kind=%s repo=%s", got[0], loginFailedKind, repoURL)
+				t.Fatalf("want exactly one %s event, got %v", events.GitLoginFailed, got)
+			case tcase.wantEvent && (got[0].eventType != events.GitLoginFailed || got[0].fields[events.FieldRepo] != repoURL):
+				t.Fatalf("event = %+v, want type=%s repo=%s", got[0], events.GitLoginFailed, repoURL)
 			case !tcase.wantEvent && len(got) != 0:
 				t.Fatalf("unexpected events: %v", got)
 			}

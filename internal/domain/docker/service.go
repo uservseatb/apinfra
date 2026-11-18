@@ -15,11 +15,10 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/uservseatb/apinfra/internal/assets"
+	"github.com/uservseatb/apinfra/internal/events"
 )
 
 const (
-	eventDockerLoginFailed = "docker_login_failed"
-
 	keyRegistryHost  = "containerRegistryHost"
 	keyRegistryUser  = "containerRegistryUser"
 	keyRegistryToken = "containerRegistryToken"
@@ -739,7 +738,7 @@ func (s *Service) prepareProjectCompose(
 
 	err = verifyHostBindSources(appDir, composeProject)
 	if err != nil {
-		s.recordSecurityViolation(project.Name, "", err.Error(), reasonDisallowedBindMount, "")
+		s.recordSecurityViolation(project.Name, "", err.Error(), events.ReasonDisallowedBindMount, "")
 
 		return nil, nil, false, fmt.Errorf(
 			"project=%s: %w: %w",
@@ -922,7 +921,7 @@ func (s *Service) dockerLogin(ctx context.Context, envs map[string]string) error
 	err := s.cli.RegistryLogin(ctx, host, user, token, s.timeouts.Login)
 	if err != nil {
 		if s.events != nil {
-			writeErr := s.events.Write(eventDockerLoginFailed, map[string]string{"registry": host})
+			writeErr := s.events.AddEvent(events.DockerLoginFailed, map[string]string{events.FieldRegistry: host})
 			if writeErr != nil {
 				log.Printf("[docker] WARN write login-failed event: %v", writeErr)
 			}

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/uservseatb/apinfra/internal/domain/docker"
+	"github.com/uservseatb/apinfra/internal/events"
 	"github.com/uservseatb/apinfra/internal/infrastructure"
 )
 
@@ -101,7 +102,7 @@ func TestValidateProjects_TrustedImagesAllowlistParsing(t *testing.T) {
 				t.Fatal("expected error")
 			}
 
-			if len(evs.got) != 1 || evs.got[0].kind != "security_violation" {
+			if len(evs.got) != 1 || evs.got[0].kind != events.SecurityViolation {
 				t.Fatalf("events = %+v, want security_violation", evs.got)
 			}
 		})

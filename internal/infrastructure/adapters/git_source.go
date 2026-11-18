@@ -12,7 +12,6 @@ import (
 	"github.com/uservseatb/apinfra/internal/config"
 	"github.com/uservseatb/apinfra/internal/domain/deployment"
 	"github.com/uservseatb/apinfra/internal/domain/docker"
-	"github.com/uservseatb/apinfra/internal/events"
 	"github.com/uservseatb/apinfra/internal/git"
 	"github.com/uservseatb/apinfra/internal/sys"
 )
@@ -26,6 +25,11 @@ const (
 
 var errPlaceholderRepoURL = errors.New("configure repo (still using example placeholder URL)")
 
+// eventRecorder records operational events (app wires events.Publisher).
+type eventRecorder interface {
+	AddEvent(eventType string, fields map[string]string) error
+}
+
 // GitConfigSource loads the in-memory config repo and host property files.
 type GitConfigSource struct {
 	repoURL    string
@@ -35,11 +39,11 @@ type GitConfigSource struct {
 	namespace  string
 	envPath    string
 	configPath string
-	events     *events.FileStore
+	events     eventRecorder
 }
 
 // NewGitConfigSource builds a ConfigSource from host settings.
-func NewGitConfigSource(cfg *config.HostConfig, eventStore *events.FileStore) *GitConfigSource {
+func NewGitConfigSource(cfg *config.HostConfig, eventStore eventRecorder) *GitConfigSource {
 	return &GitConfigSource{
 		repoURL:    cfg.RepoURL,
 		repoToken:  cfg.RepoToken,

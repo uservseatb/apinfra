@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/uservseatb/apinfra/internal/domain/docker"
+	"github.com/uservseatb/apinfra/internal/events"
 	"github.com/uservseatb/apinfra/internal/infrastructure"
 	"gopkg.in/yaml.v3"
 )
@@ -96,8 +97,8 @@ type recordedEvent struct {
 
 type fakeEvents struct{ got []recordedEvent }
 
-func (e *fakeEvents) Write(kind string, fields map[string]string) error {
-	e.got = append(e.got, recordedEvent{kind: kind, fields: fields})
+func (e *fakeEvents) AddEvent(eventType string, fields map[string]string) error {
+	e.got = append(e.got, recordedEvent{kind: eventType, fields: fields})
 
 	return nil
 }
@@ -871,7 +872,7 @@ func TestApply_RegistryLogin(t *testing.T) {
 					t.Fatalf("err = %v, want ErrLoginFailed", err)
 				}
 
-				if len(env.events.got) != 1 || env.events.got[0].kind != "docker_login_failed" ||
+				if len(env.events.got) != 1 || env.events.got[0].kind != events.DockerLoginFailed ||
 					env.events.got[0].fields["registry"] != "https://ghcr.io" {
 					t.Fatalf("events = %+v", env.events.got)
 				}
@@ -1067,22 +1068,22 @@ func TestValidateProjects_RejectsHostBindMounts(t *testing.T) {
 			name:       "host_root_bind",
 			compose:    "services:\n  web:\n    image: nginx\n    volumes:\n      - /:/host\n",
 			wantErr:    "volume policy violation",
-			wantKind:   "security_violation",
-			wantReason: "disallowed_bind_mount",
+			wantKind:   events.SecurityViolation,
+			wantReason: events.ReasonDisallowedBindMount,
 		},
 		{
 			name:       "untrusted_docker_sock",
 			compose:    "services:\n  web:\n    image: amir20/dozzle:latest\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
 			wantErr:    "volume policy violation",
-			wantKind:   "security_violation",
+			wantKind:   events.SecurityViolation,
 			wantReason: "untrusted_docker_socket_mount",
 		},
 		{
 			name:       "tmpfs_forbidden",
 			compose:    "services:\n  web:\n    image: nginx\n    volumes:\n      - type: tmpfs\n        target: /tmp\n",
 			wantErr:    "volume policy violation",
-			wantKind:   "security_violation",
-			wantReason: "disallowed_volume_type",
+			wantKind:   events.SecurityViolation,
+			wantReason: events.ReasonDisallowedVolumeType,
 		},
 		{
 			name:      "trusted_docker_sock",
@@ -1157,7 +1158,7 @@ func TestApply_TrustedImageDeployedEvent(t *testing.T) {
 	var found bool
 
 	for _, event := range env.events.got {
-		if event.kind != "trusted_image_deployed" {
+		if event.kind != events.TrustedImageDeployed {
 			continue
 		}
 
@@ -1192,7 +1193,7 @@ func TestApply_RejectsBindMountBeforeUp(t *testing.T) {
 		t.Fatalf("compose up must not run on security violation: %v", env.cli.calls)
 	}
 
-	if len(env.events.got) == 0 || env.events.got[0].kind != "security_violation" {
+	if len(env.events.got) == 0 || env.events.got[0].kind != events.SecurityViolation {
 		t.Fatalf("events = %+v, want security_violation", env.events.got)
 	}
 }
@@ -1214,8 +1215,8 @@ func TestApply_RejectsTmpfsBeforeUp(t *testing.T) {
 	}
 
 	if len(env.events.got) != 1 ||
-		env.events.got[0].kind != "security_violation" ||
-		env.events.got[0].fields["reason"] != "disallowed_volume_type" {
+		env.events.got[0].kind != events.SecurityViolation ||
+		env.events.got[0].fields["reason"] != events.ReasonDisallowedVolumeType {
 		t.Fatalf("events = %+v, want security_violation/disallowed_volume_type", env.events.got)
 	}
 }
@@ -1292,8 +1293,8 @@ func TestValidateProjects_RejectsTmpfs(t *testing.T) {
 	}
 
 	if len(env.events.got) != 1 ||
-		env.events.got[0].kind != "security_violation" ||
-		env.events.got[0].fields["reason"] != "disallowed_volume_type" {
+		env.events.got[0].kind != events.SecurityViolation ||
+		env.events.got[0].fields["reason"] != events.ReasonDisallowedVolumeType {
 		t.Fatalf("events = %+v, want security_violation/disallowed_volume_type", env.events.got)
 	}
 }

@@ -9,25 +9,10 @@ import (
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/uservseatb/apinfra/internal/events"
 )
 
-const (
-	allowedDockerSock = "/var/run/docker.sock"
-
-	eventSecurityViolation    = "security_violation"
-	eventTrustedImageDeployed = "trusted_image_deployed"
-
-	reasonDisallowedBindMount        = "disallowed_bind_mount"
-	reasonUntrustedDockerSocketMount = "untrusted_docker_socket_mount"
-	reasonDisallowedVolumeType       = "disallowed_volume_type"
-
-	fieldProject = "project"
-	fieldService = "service"
-	fieldSource  = "source"
-	fieldReason  = "reason"
-	fieldImage   = "image"
-	fieldDigest  = "digest"
-)
+const allowedDockerSock = "/var/run/docker.sock"
 
 var errVolumePolicyViolation = errors.New("volume policy violation")
 
@@ -48,7 +33,7 @@ func (s *Service) validateProjectVolumes(
 	}
 
 	for _, path := range load.Symlinks {
-		s.recordSecurityViolation(projectName, "", path, reasonDisallowedBindMount, "")
+		s.recordSecurityViolation(projectName, "", path, events.ReasonDisallowedBindMount, "")
 
 		return fmt.Errorf(
 			"project=%s: %w: source=%q: %w",
@@ -57,7 +42,7 @@ func (s *Service) validateProjectVolumes(
 	}
 
 	for _, path := range load.Missing {
-		s.recordSecurityViolation(projectName, "", path, reasonDisallowedBindMount, "")
+		s.recordSecurityViolation(projectName, "", path, events.ReasonDisallowedBindMount, "")
 
 		return fmt.Errorf(
 			"project=%s: %w: source=%q: %w",
@@ -99,7 +84,7 @@ func (s *Service) validateNamedVolume(projectName, serviceName, source string) e
 		return nil
 	}
 
-	s.recordSecurityViolation(projectName, serviceName, source, reasonDisallowedVolumeType, "")
+	s.recordSecurityViolation(projectName, serviceName, source, events.ReasonDisallowedVolumeType, "")
 
 	return fmt.Errorf(
 		"project=%s service=%s: %w: anonymous volumes are forbidden; use a named volume",
@@ -117,7 +102,7 @@ func (s *Service) validateBindVolume(
 		}
 
 		s.recordSecurityViolation(
-			projectName, serviceName, source, reasonUntrustedDockerSocketMount, image,
+			projectName, serviceName, source, events.ReasonUntrustedDockerSocketMount, image,
 		)
 
 		return fmt.Errorf(
@@ -127,7 +112,7 @@ func (s *Service) validateBindVolume(
 	}
 
 	if filepath.IsAbs(source) {
-		s.recordSecurityViolation(projectName, serviceName, source, reasonDisallowedBindMount, "")
+		s.recordSecurityViolation(projectName, serviceName, source, events.ReasonDisallowedBindMount, "")
 
 		return fmt.Errorf(
 			"project=%s service=%s: %w: source=%q (host bind mounts are forbidden; use named volumes)",
@@ -137,7 +122,7 @@ func (s *Service) validateBindVolume(
 
 	rel, err := normalizeProjectLocalBindSource(source)
 	if err != nil {
-		s.recordSecurityViolation(projectName, serviceName, source, reasonDisallowedBindMount, "")
+		s.recordSecurityViolation(projectName, serviceName, source, events.ReasonDisallowedBindMount, "")
 
 		return fmt.Errorf(
 			"project=%s service=%s: %w: source=%q: %w",
@@ -146,7 +131,7 @@ func (s *Service) validateBindVolume(
 	}
 
 	if !bindAssetCovers(load, rel) {
-		s.recordSecurityViolation(projectName, serviceName, source, reasonDisallowedBindMount, "")
+		s.recordSecurityViolation(projectName, serviceName, source, events.ReasonDisallowedBindMount, "")
 
 		return fmt.Errorf(
 			"project=%s service=%s: %w: source=%q: %w",
@@ -163,7 +148,7 @@ func (s *Service) rejectVolumeType(projectName, serviceName, source, volType str
 		typeLabel = "unknown"
 	}
 
-	s.recordSecurityViolation(projectName, serviceName, source, reasonDisallowedVolumeType, "")
+	s.recordSecurityViolation(projectName, serviceName, source, events.ReasonDisallowedVolumeType, "")
 
 	return fmt.Errorf(
 		"project=%s service=%s: %w: volume type %q is forbidden "+
@@ -343,15 +328,15 @@ func (s *Service) emitTrustedImageDeployed(projectName string) {
 		}
 
 		fields := map[string]string{
-			fieldProject: projectName,
-			fieldService: ref.service,
-			fieldImage:   ref.image,
+			events.FieldProject: projectName,
+			events.FieldService: ref.service,
+			events.FieldImage:   ref.image,
 		}
 		if digest != "" {
-			fields[fieldDigest] = digest
+			fields[events.FieldDigest] = digest
 		}
 
-		writeErr := s.events.Write(eventTrustedImageDeployed, fields)
+		writeErr := s.events.AddEvent(events.TrustedImageDeployed, fields)
 		if writeErr != nil {
 			log.Printf("[docker] WARN write trusted-image-deployed event: %v", writeErr)
 		}
@@ -369,16 +354,16 @@ func (s *Service) recordSecurityViolation(project, service, source, reason, imag
 	}
 
 	fields := map[string]string{
-		fieldProject: project,
-		fieldService: service,
-		fieldSource:  source,
-		fieldReason:  reason,
+		events.FieldProject: project,
+		events.FieldService: service,
+		events.FieldSource:  source,
+		events.FieldReason:  reason,
 	}
 	if strings.TrimSpace(image) != "" {
-		fields[fieldImage] = strings.TrimSpace(image)
+		fields[events.FieldImage] = strings.TrimSpace(image)
 	}
 
-	writeErr := s.events.Write(eventSecurityViolation, fields)
+	writeErr := s.events.AddEvent(events.SecurityViolation, fields)
 	if writeErr != nil {
 		log.Printf("[docker] WARN write security_violation event: %v", writeErr)
 	}
