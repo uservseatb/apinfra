@@ -286,9 +286,11 @@ func (s *Service) applyRunningStacks(
 		}
 	}
 
-	downed := s.downAppNames(ctx, appsToDown)
+	downed := s.downAppNames(ctx, appsToDown, containers)
 
-	proxyStarted, appsRestarted, err := s.startProxyAndApps(ctx, proxyChanged, proxyPending, needProxy, appsToStart)
+	proxyStarted, appsRestarted, err := s.startProxyAndApps(
+		ctx, proxyChanged, proxyPending, needProxy, appsToStart, desiredServices, containers,
+	)
 	result.Restarted = proxyStarted || appsRestarted || downed
 
 	if proxyStarted {
@@ -467,13 +469,15 @@ func (s *Service) startProxyAndApps(
 	ctx context.Context,
 	proxyChanged, proxyPending, needProxy bool,
 	appsToStart []string,
+	desiredServices map[string]map[string]struct{},
+	hostContainers []Container,
 ) (bool, bool, error) {
 	proxyStarted, err := s.startProxyIfNeeded(ctx, proxyChanged, proxyPending, needProxy)
 	if err != nil {
 		return false, false, err
 	}
 
-	appsRestarted, err := s.startApps(ctx, appsToStart)
+	appsRestarted, err := s.startApps(ctx, appsToStart, desiredServices, hostContainers)
 
 	return proxyStarted, appsRestarted, err
 }
@@ -588,7 +592,12 @@ func appsNeedingStart(
 	return out
 }
 
-func (s *Service) startApps(ctx context.Context, appsToStart []string) (bool, error) {
+func (s *Service) startApps(
+	ctx context.Context,
+	appsToStart []string,
+	desiredServices map[string]map[string]struct{},
+	hostContainers []Container,
+) (bool, error) {
 	if len(appsToStart) == 0 {
 		log.Printf("[docker] no app stacks to start")
 
@@ -601,6 +610,9 @@ func (s *Service) startApps(ctx context.Context, appsToStart []string) (bool, er
 	)
 
 	for _, name := range appsToStart {
+		composeID := composeProjectName(name)
+		diff := computeServiceDeployDiff(hostContainers, composeID, desiredServices[composeID])
+
 		upAttempted, err := s.pullAndUpApp(ctx, name)
 		if upAttempted {
 			restarted = true
@@ -608,18 +620,114 @@ func (s *Service) startApps(ctx context.Context, appsToStart []string) (bool, er
 
 		if err != nil {
 			log.Printf("[docker] WARN start project=%s: %v (continuing with remaining stacks)", name, err)
-
+			s.emitContainerDeployFailed(name, diff, err)
 			errs = append(errs, err)
 
 			continue
 		}
 
 		if upAttempted {
+			s.emitContainerDeployed(name, diff)
 			s.emitTrustedImageDeployed(name)
 		}
 	}
 
 	return restarted, errors.Join(errs...)
+}
+
+func (s *Service) emitContainerDeployed(projectName string, diff serviceDeployDiff) {
+	log.Printf(
+		"[docker] container deployed project=%s containers=%s added=%s removed=%s started=%s",
+		projectName,
+		formatNameList(diff.containers),
+		formatNameList(diff.added),
+		formatNameList(diff.removed),
+		formatNameList(diff.started),
+	)
+
+	if s.events == nil {
+		return
+	}
+
+	writeErr := s.events.AddEvent(events.ContainerDeployed, containerDeployEventFields(projectName, diff))
+	if writeErr != nil {
+		log.Printf("[docker] WARN write container_deployed event: %v", writeErr)
+	}
+}
+
+func (s *Service) emitContainerDeployFailed(projectName string, diff serviceDeployDiff, err error) {
+	log.Printf(
+		"[docker] container deploy failed project=%s containers=%s added=%s removed=%s started=%s",
+		projectName,
+		formatNameList(diff.containers),
+		formatNameList(diff.added),
+		formatNameList(diff.removed),
+		formatNameList(diff.started),
+	)
+
+	if s.events == nil {
+		return
+	}
+
+	fields := containerDeployEventFields(projectName, diff)
+	if err != nil {
+		fields[events.FieldError] = err.Error()
+	}
+
+	writeErr := s.events.AddEvent(events.ContainerDeployFailed, fields)
+	if writeErr != nil {
+		log.Printf("[docker] WARN write container_deploy_failed event: %v", writeErr)
+	}
+}
+
+func (s *Service) emitContainerRemoved(projectName string, containers []string) {
+	log.Printf(
+		"[docker] container removed project=%s containers=%s",
+		projectName, formatNameList(containers),
+	)
+
+	if s.events == nil {
+		return
+	}
+
+	fields := map[string]string{events.FieldProject: projectName}
+	setCSVField(fields, events.FieldContainers, containers)
+
+	writeErr := s.events.AddEvent(events.ContainerRemoved, fields)
+	if writeErr != nil {
+		log.Printf("[docker] WARN write container_removed event: %v", writeErr)
+	}
+}
+
+func containerDeployEventFields(projectName string, diff serviceDeployDiff) map[string]string {
+	fields := map[string]string{events.FieldProject: projectName}
+	setCSVField(fields, events.FieldContainers, diff.containers)
+	setCSVField(fields, events.FieldAdded, diff.added)
+	setCSVField(fields, events.FieldRemoved, diff.removed)
+	setCSVField(fields, events.FieldStarted, diff.started)
+
+	return fields
+}
+
+func setCSVField(fields map[string]string, key string, values []string) {
+	if joined := strings.Join(values, ","); joined != "" {
+		fields[key] = joined
+	}
+}
+
+func composeServicesForApp(containers []Container, appName string) []string {
+	want := composeProjectName(appName)
+	seen := make(map[string]struct{})
+
+	for _, c := range containers {
+		if c.ComposeProject != want || c.ComposeService == "" {
+			continue
+		}
+
+		seen[c.ComposeService] = struct{}{}
+	}
+
+	return sortedSetNames(seen)
 }
 
 func (s *Service) writeProxyStack(ctx context.Context, projects []Project) (bool, bool, error) {
@@ -860,7 +968,7 @@ func (s *Service) pullAndUpApp(ctx context.Context, projectName string) (bool, e
 	return true, nil
 }
 
-func (s *Service) downAppNames(ctx context.Context, names []string) bool {
+func (s *Service) downAppNames(ctx context.Context, names []string, containers []Container) bool {
 	if len(names) == 0 {
 		return false
 	}
@@ -875,9 +983,11 @@ func (s *Service) downAppNames(ctx context.Context, names []string) bool {
 			useComposeFile = false
 		}
 
+		services := composeServicesForApp(containers, name)
+
 		log.Printf(
-			"[docker] down unused project=%s (useComposeFile=%v; timeout=%s)",
-			name, useComposeFile, s.timeouts.ComposeDown,
+			"[docker] down unused project=%s containers=%s (useComposeFile=%v; timeout=%s)",
+			name, formatNameList(services), useComposeFile, s.timeouts.ComposeDown,
 		)
 
 		execErr := s.cli.ComposeDownApp(ctx, name, useComposeFile, s.timeouts.ComposeDown)
@@ -893,6 +1003,8 @@ func (s *Service) downAppNames(ctx context.Context, names []string) bool {
 
 			continue
 		}
+
+		s.emitContainerRemoved(name, services)
 
 		downed = true
 	}

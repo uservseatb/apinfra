@@ -1,8 +1,98 @@
 package docker
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 const containerStateRunning = "running"
+
+// serviceDeployDiff classifies compose services for one project relative to the
+// host ContainerList taken before compose up.
+type serviceDeployDiff struct {
+	containers []string // desired compose service keys
+	added      []string // desired, no container on host yet
+	removed    []string // on host for this compose project, not in desired (orphans)
+	started    []string // desired, present on host but not running
+}
+
+func computeServiceDeployDiff(
+	containers []Container,
+	composeProject string,
+	desired map[string]struct{},
+) serviceDeployDiff {
+	type svcState struct {
+		present bool
+		running bool
+	}
+
+	observed := make(map[string]*svcState)
+
+	for _, c := range containers {
+		if c.ComposeProject != composeProject || c.ComposeService == "" {
+			continue
+		}
+
+		state := observed[c.ComposeService]
+		if state == nil {
+			state = &svcState{present: false, running: false}
+			observed[c.ComposeService] = state
+		}
+
+		state.present = true
+		if c.State == containerStateRunning {
+			state.running = true
+		}
+	}
+
+	desiredNames := sortedSetNames(desired)
+
+	var added, started []string
+
+	for _, name := range desiredNames {
+		state := observed[name]
+		switch {
+		case state == nil:
+			added = append(added, name)
+		case !state.running:
+			started = append(started, name)
+		}
+	}
+
+	var removed []string
+
+	for name := range observed {
+		if _, ok := desired[name]; ok {
+			continue
+		}
+
+		removed = append(removed, name)
+	}
+
+	slices.Sort(removed)
+
+	return serviceDeployDiff{
+		containers: desiredNames,
+		added:      added,
+		removed:    removed,
+		started:    started,
+	}
+}
+
+func sortedSetNames(set map[string]struct{}) []string {
+	if len(set) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(set))
+	for name := range set {
+		out = append(out, name)
+	}
+
+	slices.Sort(out)
+
+	return out
+}
 
 func proxyReadyAmong(containers []Container, readyAfter time.Duration) bool {
 	if readyAfter <= 0 {

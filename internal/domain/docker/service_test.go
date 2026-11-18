@@ -31,6 +31,7 @@ const (
 
 var (
 	errTestPull  = errors.New("test: pull failed")
+	errTestUp    = errors.New("test: up failed")
 	errTestLogin = errors.New("test: login failed")
 	errTestList  = errors.New("test: docker api down")
 	errTestDown  = errors.New("test: down failed")
@@ -215,10 +216,10 @@ func appRunning(project string) docker.Container {
 	}
 }
 
-func appService(project, service, state string) docker.Container {
+func appService(project, service string) docker.Container {
 	return docker.Container{
 		Name:           project + "-" + service,
-		State:          state,
+		State:          "running",
 		ComposeProject: "apinfra_" + project,
 		ComposeService: service,
 	}
@@ -407,7 +408,7 @@ func TestApply_RestartDecisions(t *testing.T) {
 			second: []docker.Project{shopProject(multiCompose)},
 			containers: []docker.Container{
 				proxyUp(time.Minute),
-				appService(projShop, "web", "running"),
+				appService(projShop, "web"),
 				// db service container was docker rm'd — absent from the list
 			},
 			wantCalls: []string{"pull-app:shop", "up-app:shop"},
@@ -420,8 +421,8 @@ func TestApply_RestartDecisions(t *testing.T) {
 			second: []docker.Project{shopProject(multiCompose)},
 			containers: []docker.Container{
 				proxyUp(time.Minute),
-				appService(projShop, "web", "running"),
-				appService(projShop, "db", "running"),
+				appService(projShop, "web"),
+				appService(projShop, "db"),
 			},
 			wantCalls: nil,
 			wantProxy: true,
@@ -550,12 +551,13 @@ func TestApply_DownsUnusedApps(t *testing.T) {
 			}
 
 			env.cli.calls = nil
+			env.events.got = nil
 			env.cli.errs["down:old"] = tcase.downErr
 			env.lister.containers = []docker.Container{
 				proxyUp(time.Minute),
 				appRunning(projShop),
 				appRunning("old"),
-				appRunning("ghost"), // no apps/ghost dir: found only through docker labels
+				appService("ghost", "api"), // no apps/ghost dir: found only through docker labels
 			}
 
 			res, err := env.applyAll(t, shopProject(baseCompose))
@@ -584,6 +586,27 @@ func TestApply_DownsUnusedApps(t *testing.T) {
 			// ghost's down succeeded, so the cycle counts as restarted either way.
 			if !res.Restarted {
 				t.Fatalf("Restarted = false, want true (ghost was downed)")
+			}
+
+			removed := map[string]string{}
+
+			for _, event := range env.events.got {
+				if event.kind != events.ContainerRemoved {
+					continue
+				}
+
+				removed[event.fields["project"]] = event.fields["containers"]
+			}
+
+			if removed["ghost"] != "api" {
+				t.Fatalf("ghost remove event = %+v, want containers=api", env.events.got)
+			}
+
+			switch {
+			case tcase.downErr == nil && removed["old"] != "web":
+				t.Fatalf("old remove event = %+v, want containers=web", env.events.got)
+			case tcase.downErr != nil && removed["old"] != "":
+				t.Fatalf("failed down must not emit container_removed for old: %+v", env.events.got)
 			}
 		})
 	}
@@ -876,8 +899,30 @@ func TestApply_RegistryLogin(t *testing.T) {
 					env.events.got[0].fields["registry"] != "https://ghcr.io" {
 					t.Fatalf("events = %+v", env.events.got)
 				}
-			} else if len(env.events.got) != 0 {
-				t.Fatalf("unexpected events: %+v", env.events.got)
+
+				return
+			}
+
+			for _, event := range env.events.got {
+				if event.kind == events.DockerLoginFailed {
+					t.Fatalf("unexpected docker_login_failed: %+v", env.events.got)
+				}
+			}
+
+			if tcase.wantStarted {
+				var found bool
+
+				for _, event := range env.events.got {
+					if event.kind == events.ContainerDeployed && event.fields["project"] == projShop {
+						found = true
+
+						break
+					}
+				}
+
+				if !found {
+					t.Fatalf("missing container_deployed in %+v", env.events.got)
+				}
 			}
 		})
 	}
@@ -1155,25 +1200,187 @@ func TestApply_TrustedImageDeployedEvent(t *testing.T) {
 		t.Fatalf("expected up-app:dozzle in %v", env.cli.calls)
 	}
 
-	var found bool
+	var foundTrusted, foundDeployed bool
 
 	for _, event := range env.events.got {
-		if event.kind != events.TrustedImageDeployed {
-			continue
-		}
+		switch event.kind {
+		case events.TrustedImageDeployed:
+			foundTrusted = true
 
-		found = true
+			if event.fields["project"] != "dozzle" ||
+				event.fields["service"] != "dozzle" ||
+				event.fields["image"] != trustedDigest ||
+				event.fields["digest"] != "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+				t.Fatalf("unexpected event fields: %+v", event.fields)
+			}
+		case events.ContainerDeployed:
+			foundDeployed = true
 
-		if event.fields["project"] != "dozzle" ||
-			event.fields["service"] != "dozzle" ||
-			event.fields["image"] != trustedDigest ||
-			event.fields["digest"] != "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
-			t.Fatalf("unexpected event fields: %+v", event.fields)
+			if event.fields["project"] != "dozzle" ||
+				event.fields["containers"] != "dozzle" ||
+				event.fields["added"] != "dozzle" {
+				t.Fatalf("unexpected container_deployed fields: %+v", event.fields)
+			}
 		}
 	}
 
-	if !found {
+	if !foundTrusted {
 		t.Fatalf("missing trusted_image_deployed in %+v", env.events.got)
+	}
+
+	if !foundDeployed {
+		t.Fatalf("missing container_deployed in %+v", env.events.got)
+	}
+}
+
+func TestApply_ContainerDeployedListsServices(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		compose    string
+		wantJoined string
+	}{
+		{name: "single", compose: baseCompose, wantJoined: "web"},
+		{name: "multi", compose: multiCompose, wantJoined: "db,web"},
+	}
+
+	for _, tcase := range tests {
+		t.Run(tcase.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newDockerEnv(t)
+
+			_, err := env.applyAll(t, shopProject(tcase.compose))
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+
+			if len(env.events.got) != 1 ||
+				env.events.got[0].kind != events.ContainerDeployed ||
+				env.events.got[0].fields["project"] != projShop ||
+				env.events.got[0].fields["containers"] != tcase.wantJoined ||
+				env.events.got[0].fields["added"] != tcase.wantJoined ||
+				env.events.got[0].fields["removed"] != "" ||
+				env.events.got[0].fields["started"] != "" {
+				t.Fatalf(
+					"events = %+v, want containers=%s added=%s",
+					env.events.got, tcase.wantJoined, tcase.wantJoined,
+				)
+			}
+		})
+	}
+}
+
+func TestApply_ContainerDeployedDiffFields(t *testing.T) {
+	t.Parallel()
+
+	env := newDockerEnv(t)
+
+	_, err := env.applyAll(t, shopProject(baseCompose))
+	if err != nil {
+		t.Fatalf("baseline Apply: %v", err)
+	}
+
+	env.events.got = nil
+	env.cli.calls = nil
+	// Desired becomes web+db; host has stopped web, orphan worker, missing db.
+	env.lister.containers = []docker.Container{
+		proxyUp(time.Minute),
+		{
+			Name:           "shop-web",
+			State:          "exited",
+			ComposeProject: shopComposeID,
+			ComposeService: "web",
+		},
+		{
+			Name:           "shop-worker",
+			State:          "running",
+			ComposeProject: shopComposeID,
+			ComposeService: "worker",
+		},
+	}
+
+	_, err = env.applyAll(t, shopProject(multiCompose))
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if len(env.events.got) != 1 || env.events.got[0].kind != events.ContainerDeployed {
+		t.Fatalf("events = %+v, want one container_deployed", env.events.got)
+	}
+
+	fields := env.events.got[0].fields
+	if fields["project"] != projShop ||
+		fields["containers"] != "db,web" ||
+		fields["added"] != "db" ||
+		fields["removed"] != "worker" ||
+		fields["started"] != "web" {
+		t.Fatalf("fields = %+v, want containers=db,web added=db removed=worker started=web", fields)
+	}
+}
+
+func TestApply_ContainerDeployFailedEvents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		errKey  string
+		wantErr error
+	}{
+		{name: "pull_failure", errKey: "pull-app:" + projShop, wantErr: errTestPull},
+		{name: "up_failure", errKey: "up-app:" + projShop, wantErr: errTestUp},
+	}
+
+	for _, tcase := range tests {
+		t.Run(tcase.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newDockerEnv(t)
+			env.cli.errs[tcase.errKey] = tcase.wantErr
+
+			_, err := env.applyAll(t, shopProject(baseCompose))
+			if !errors.Is(err, tcase.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tcase.wantErr)
+			}
+
+			if len(env.events.got) != 1 ||
+				env.events.got[0].kind != events.ContainerDeployFailed ||
+				env.events.got[0].fields["project"] != projShop ||
+				env.events.got[0].fields["containers"] != "web" ||
+				env.events.got[0].fields["added"] != "web" ||
+				!strings.Contains(env.events.got[0].fields["error"], tcase.wantErr.Error()) {
+				t.Fatalf("events = %+v, want container_deploy_failed containers=web added=web", env.events.got)
+			}
+		})
+	}
+}
+
+func TestApply_ContainerDeploySkippedNoEvent(t *testing.T) {
+	t.Parallel()
+
+	env := newDockerEnv(t)
+
+	_, err := env.applyAll(t, shopProject(baseCompose))
+	if err != nil {
+		t.Fatalf("baseline Apply: %v", err)
+	}
+
+	env.events.got = nil
+	env.lister.containers = []docker.Container{proxyUp(time.Minute), appRunning(projShop)}
+	env.cli.calls = nil
+
+	_, err = env.applyAll(t, shopProject(baseCompose))
+	if err != nil {
+		t.Fatalf("stable Apply: %v", err)
+	}
+
+	if len(env.cli.calls) != 0 {
+		t.Fatalf("healthy cycle must not restart: %v", env.cli.calls)
+	}
+
+	if len(env.events.got) != 0 {
+		t.Fatalf("skipped deploy must not emit events: %+v", env.events.got)
 	}
 }
 
