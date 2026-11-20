@@ -80,6 +80,7 @@ linters:
             - github.com/go-git/go-billy
             - github.com/go-git/go-git
             - github.com/moby/moby
+            - github.com/nicholas-fedor/shoutrrr
             - gopkg.in/yaml.v3
     tagliatelle:
       case:

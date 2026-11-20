@@ -15,6 +15,7 @@ import (
 	"github.com/uservseatb/apinfra/internal/events"
 	"github.com/uservseatb/apinfra/internal/infrastructure"
 	"github.com/uservseatb/apinfra/internal/infrastructure/adapters"
+	"github.com/uservseatb/apinfra/internal/notify"
 	"github.com/uservseatb/apinfra/internal/sys"
 )
 
@@ -63,6 +64,8 @@ func LogRunSeparator() {
 
 func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
 	eventPublisher := newEventPublisher()
+	notifier := newNotifier(cfg)
+	notifier.Prepare()
 
 	cliRunner := adapters.NewCliRunner(cfg.InfraDirPath, cfg.UseExecLogs)
 	stackFS := infrastructure.NewStackFS(cfg.InfraDirPath)
@@ -128,7 +131,7 @@ func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
 
 	gitopsService := deployment.NewGitOpsDeploymentService(
 		cfg.Namespace,
-		cfg.CertsPublicIP,
+		cfg.HostPublicIP,
 		layout,
 		gitSource,
 		dockerService,
@@ -142,6 +145,28 @@ func runWiredUpdate(ctx context.Context, cfg *config.HostConfig) {
 			sys.RedactURLUserinfo(err.Error()),
 		)
 	}
+
+	notifier.Flush(ctx)
+}
+
+func newNotifier(cfg *config.HostConfig) *notify.Dispatcher {
+	dispatcher, err := notify.New(notify.Config{ //nolint:exhaustruct_v5 // EventsPath/StatePath empty → New defaults
+		Enabled:     cfg.NotificationsEnabled,
+		Targets:     cfg.NotificationTargets,
+		Events:      cfg.NotificationEvents,
+		Timeout:     cfg.NotificationTimeout,
+		MaxPerCycle: cfg.NotificationMaxPerCycle,
+		CutEvery:    cfg.NotificationCutEvery,
+		ServerName:  cfg.HostDisplayName(),
+		Namespace:   cfg.Namespace,
+	})
+	if err != nil {
+		log.Printf("[update] WARN notify: %v", err)
+
+		return nil
+	}
+
+	return dispatcher
 }
 
 func newEventPublisher() *events.Publisher {

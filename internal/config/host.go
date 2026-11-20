@@ -46,7 +46,6 @@ const (
 	keyProjectNetworkMTU           = "projectNetworkMTU"
 	keyCertIssueTimeout            = "certIssueTimeout"
 	keyCertsProvider               = "certs.provider"
-	keyCertsPublicIP               = "certs.publicIP"
 	keyCertsTriesCount             = "certs.triesCount"
 	keyCertsBlockHours             = "certs.blockHours"
 	keyCertsDowngradeCertModeHours = "certs.downgradeCertModeHours"
@@ -94,6 +93,8 @@ type HostConfig struct {
 	ConfigPath                  string
 	EnvPath                     string
 	Namespace                   string
+	ServerName                  string
+	HostPublicIP                string
 	RepoURL                     string
 	RepoToken                   string
 	RepoBranch                  string
@@ -112,7 +113,6 @@ type HostConfig struct {
 	ProjectNetworkMTU           int
 	CertIssueTimeout            time.Duration
 	CertsProvider               string
-	CertsPublicIP               string
 	CertsTriesCount             int
 	CertsBlockHours             int
 	CertsDowngradeCertModeHours int
@@ -122,6 +122,13 @@ type HostConfig struct {
 	LetsEncryptDirectory        string
 	LetsEncryptStagingDirectory string
 	ZeroSSLDirectory            string
+
+	NotificationsEnabled    bool
+	NotificationTargets     []string
+	NotificationEvents      []string
+	NotificationTimeout     time.Duration
+	NotificationMaxPerCycle int
+	NotificationCutEvery    int
 }
 
 // LoadHostConfig resolves $HOME/infra and reads the sibling .apinfra file.
@@ -152,6 +159,7 @@ func hostConfigPath(infraDirPath string) string {
 	return filepath.Join(filepath.Dir(filepath.Clean(infraDirPath)), hostConfigFileName)
 }
 
+//nolint:funlen // single host config assembly
 func buildHostConfig(infraDirPath, configPath string, envs map[string]string) (*HostConfig, error) {
 	namespace, err := requireHostKey(envs, "namespace", configPath)
 	if err != nil {
@@ -195,11 +203,18 @@ func buildHostConfig(infraDirPath, configPath string, envs map[string]string) (*
 		return nil, err
 	}
 
+	notifications, err := parseNotifications(envs)
+	if err != nil {
+		return nil, err
+	}
+
 	return &HostConfig{
 		InfraDirPath:                infraDirPath,
 		ConfigPath:                  configPath,
 		EnvPath:                     envPath,
 		Namespace:                   namespace,
+		ServerName:                  optionalHostKey(envs, keyServerName),
+		HostPublicIP:                optionalHostKey(envs, keyHostPublicIP),
 		RepoURL:                     repoURL,
 		RepoToken:                   optionalHostKey(envs, "repoToken"),
 		RepoBranch:                  repoBranch,
@@ -218,7 +233,6 @@ func buildHostConfig(infraDirPath, configPath string, envs map[string]string) (*
 		ProjectNetworkMTU:           projectNetworkMTU,
 		CertIssueTimeout:            timeouts.certIssue,
 		CertsProvider:               certs.provider,
-		CertsPublicIP:               certs.publicIP,
 		CertsTriesCount:             retry.triesCount,
 		CertsBlockHours:             retry.blockHours,
 		CertsDowngradeCertModeHours: retry.downgradeCertModeHours,
@@ -227,6 +241,12 @@ func buildHostConfig(infraDirPath, configPath string, envs map[string]string) (*
 		LetsEncryptDirectory:        certs.letsEncryptDirectory,
 		LetsEncryptStagingDirectory: certs.letsEncryptStagingDirectory,
 		ZeroSSLDirectory:            certs.zeroSSLDirectory,
+		NotificationsEnabled:        notifications.enabled,
+		NotificationTargets:         notifications.targets,
+		NotificationEvents:          notifications.eventKinds,
+		NotificationTimeout:         notifications.timeout,
+		NotificationMaxPerCycle:     notifications.maxPerCycle,
+		NotificationCutEvery:        notifications.cutEvery,
 	}, nil
 }
 
@@ -339,7 +359,6 @@ func parseNetworkMTU(envs map[string]string, key string, fallback int) (int, err
 
 type hostCertsSettings struct {
 	provider                    string
-	publicIP                    string
 	kid                         string
 	hmac                        string
 	letsEncryptDirectory        string
@@ -347,11 +366,11 @@ type hostCertsSettings struct {
 	zeroSSLDirectory            string
 }
 
-// parseCertsProvider reads certs.provider, optional public IP for DNS preflight,
-// optional ACME directory URLs, and optional ZeroSSL EAB credentials.
-// Default provider is letsencrypt. ZeroSSL as primary requires AcmeKid and AcmeHmac.
-// When EAB credentials are set with letsencrypt primary, both CAs are available
-// for rate-limit fallback. Omitted directory URLs use public CA defaults.
+// parseCertsProvider reads certs.provider, optional ACME directory URLs, and
+// optional ZeroSSL EAB credentials. Default provider is letsencrypt. ZeroSSL as
+// primary requires AcmeKid and AcmeHmac. When EAB credentials are set with
+// letsencrypt primary, both CAs are available for rate-limit fallback. Omitted
+// directory URLs use public CA defaults. DNS preflight IP is hostPublicIP.
 func parseCertsProvider(envs map[string]string) (hostCertsSettings, error) {
 	provider := strings.ToLower(optionalHostKey(envs, keyCertsProvider))
 	if provider == "" {
@@ -367,7 +386,6 @@ func parseCertsProvider(envs map[string]string) (hostCertsSettings, error) {
 
 	kid := optionalHostKey(envs, keyZeroSSLAcmeKid)
 	hmac := optionalHostKey(envs, keyZeroSSLAcmeHmac)
-	publicIP := optionalHostKey(envs, keyCertsPublicIP)
 
 	if provider == CertsProviderZeroSSL && (kid == "" || hmac == "") {
 		return hostCertsSettings{}, errMissingZeroSSLEAB
@@ -375,7 +393,6 @@ func parseCertsProvider(envs map[string]string) (hostCertsSettings, error) {
 
 	return hostCertsSettings{
 		provider:                    provider,
-		publicIP:                    publicIP,
 		kid:                         kid,
 		hmac:                        hmac,
 		letsEncryptDirectory:        optionalHostKeyOr(envs, keyLetsEncryptDirectory, defaultLetsEncryptDirectory),

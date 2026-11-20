@@ -13,6 +13,21 @@ const (
 	CertIssueFailed       = "cert_issue_failed"
 )
 
+// AllTypes lists every production event type for config validation.
+func AllTypes() []string {
+	return []string{
+		GitLoginFailed,
+		DockerLoginFailed,
+		SecurityViolation,
+		TrustedImageDeployed,
+		ContainerDeployed,
+		ContainerDeployFailed,
+		ContainerRemoved,
+		CertRateLimited,
+		CertIssueFailed,
+	}
+}
+
 // Event field keys (string values in the JSONL object).
 const (
 	FieldRepo         = "repo"
