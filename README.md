@@ -508,7 +508,7 @@ image: ghcr.io/example/storefront-web:${WEB_IMAGE_TAG}
 1. **Issuance need check:** On every one-minute cycle the agent consults the local state file `.certs.json`. An ACME request is made only in three cases: the project has no certificate yet, the soft TTL (`issued_at` + `cert-update-time-sec`) for the active mode has elapsed, or `cert-issue-type` changed in `settings.yml`. For `prod`, cached PEMs are restored to disk first when that prod soft TTL is still valid (no CA call; `certs.prod.issued_at` is not bumped).
 2. **DNS preflight:** Before sending an ACME request for `prod` or `test`, the agent resolves the domain locally (`dig +short <domain>`).
     * If the DNS record is not ready yet (empty answer) or a network error occurs, the agent simply **skips** that domain for this cycle. The error counter (`attempts`) is not increased and the mode is not downgraded. This avoids false blocks while the domain is still being delegated.
-    * If `certs.publicIP` is set, the agent also requires that IP to appear in the `dig` response.
+    * If `hostPublicIP` is set, the agent also requires that IP to appear in the `dig` response.
 3. **Failure handling and Nginx protection:** If certificate issuance fails, **the rest of the deploy cycle is not aborted**. The agent restores that project's Nginx config from the pre-cycle snapshot. The previous working configuration keeps serving traffic.
 4. **ACME rate-limit response:** If the provider returns a rate-limit error (`urn:ietf:params:acme:error:rateLimited` / HTTP 429), the agent temporarily lowers the bar (downgrade). First it tries the alternate provider (for example Let's Encrypt → ZeroSSL when EAB is configured). If both fail, it writes event `cert_rate_limited` and for `certs.downgradeCertModeHours` (default 24 hours) moves the domain to a softer mode along `prod` → `test` → `mock` → `none`. In `mock` mode a local self-signed certificate is generated so Nginx can still start.
 5. **Block on persistent errors:** For ordinary non–rate-limit failures (timeouts, validation problems, etc.) the agent counts attempts in `.retries`. After `certs.triesCount` is reached, the domain is blocked for `certs.blockHours` (default 24 hours, `blocked_until`) to avoid spamming the network and give the operator time to fix the issue. The block can be cleared manually by deleting the domain entry from the file.
@@ -532,7 +532,7 @@ Issuance behavior and ACME CA selection can be configured in the host agent conf
 | `certs.provider` | `letsencrypt` | Primary ACME CA: `letsencrypt` or `zerossl`. ZeroSSL as primary requires EAB credentials below. |
 | `certs.zerossl.AcmeKid` | — | ZeroSSL External Account Binding (EAB) key id. Required when `certs.provider=zerossl`. Obtain from the ZeroSSL panel. If set while the primary is Let's Encrypt, ZeroSSL is used as the rate-limit fallback CA before mode downgrade. |
 | `certs.zerossl.AcmeHmac` | — | ZeroSSL EAB HMAC key. Required together with `AcmeKid` when using ZeroSSL (primary or fallback). |
-| `certs.publicIP` | — | *Optional.* Expected public IP of the server. When set, local DNS preflight requires that exact IP among `dig` results. |
+| `hostPublicIP` | — | *Optional.* Expected public IP of the server. When set, local DNS preflight requires that exact IP among `dig` results. Also used as the alert-title fallback when `serverName` is empty. |
 | `certs.letsencrypt.directory` | `https://acme-v02.api.letsencrypt.org/directory` | *Optional.* Let's Encrypt production ACME directory URL (lego `CADirURL`). |
 | `certs.letsencrypt.stagingDirectory` | `https://acme-staging-v02.api.letsencrypt.org/directory` | *Optional.* Let's Encrypt staging ACME directory URL used for `cert-issue-type: test`. |
 | `certs.zerossl.directory` | `https://acme.zerossl.com/v2/DV90` | *Optional.* ZeroSSL ACME directory URL. |
@@ -715,9 +715,50 @@ Operational events are appended as JSON Lines to `~/.events` (for user `ap`: `/h
 | `cert_rate_limited` | ACME rate limit / HTTP 429 after both CAs fail at the current mode (or only one CA is configured). | `domain`, `from`, `to` — mode before and after downgrade. | `.downgradeCertMode` is set to the next lower mode for `certs.downgradeCertModeHours` (`prod` → `test` → `mock` → `none`). If the mode reaches `none`, Nginx switches to plain HTTP and skips ACME for that domain until the downgrade TTL expires. All other domains continue normally. |
 | `cert_issue_failed` | `certs.triesCount` is exhausted due to ordinary non–rate-limit issuance errors (one increment per agent run). | `domain`, `attempts`, `mode`, `blocked_until`. | In `.retries` the domain is marked `blocked: true` until `blocked_until` (`now` + `certs.blockHours`). While blocked, further certificate issue attempts for that domain are skipped. All other domains continue unchanged. |
 
+### Outbound notifications (optional)
+
+When enabled, the agent **tails** `~/.events` after each update cycle (after image prune when it runs) and pushes matching events outbound via [Shoutrrr](https://github.com/nicholas-fedor/shoutrrr). No inbound ports are opened. Delivery failures are logged as warnings and **never** abort the deploy cycle.
+
+Cursor state lives in `~/.events.notify.state.json` (`offset` byte position, `count` of consumed lines). The agent reads **one JSONL line at a time** from `offset`, sends it, and advances the cursor **only after a successful send** (or an intentional skip for filtered lines). First enable anchors the cursor at EOF so historical events are not replayed.
+
+```properties
+# serverName=dev-1
+# hostPublicIP=203.0.113.10
+notifications.enabled=true
+notifications.targets=telegram://<bot_token>@telegram?chats=<chat_id>&apiurl=https://tg-proxy.example.com ntfy://ntfy.sh/my-alerts
+# notifications.events=all
+# notifications.timeout=10s
+# notifications.maxPerCycle=10
+# notifications.cutEvery=100
+```
+
+Alert title is `<host>[<namespace>]` (e.g. `dev-1[dev]`), where `<host>` resolves as `serverName` → `hostPublicIP` → OS hostname (`unknown-host` if all empty).
+
+| Property | Default | Description |
+| :--- | :--- | :--- |
+| `serverName` | — | Optional friendly host label for alert titles. |
+| `hostPublicIP` | — | Optional public IP: DNS preflight for ACME and alert-title fallback when `serverName` is empty. |
+| `notifications.enabled` | `false` | Master switch. When `false`, other `notifications.*` keys are ignored. |
+| `notifications.targets` | — | **Required** when enabled. Space-separated Shoutrrr URLs (`telegram://…`, `ntfy://…`, `generic+https://…`, `smtp://…`, …). |
+| `notifications.events` | all types* | Comma-separated event `type` filter. Omitted/empty/`all` → every production event type. Unknown names (or `all` mixed with others) soft-fail config load. |
+| `notifications.timeout` | `10s` | Per-send deadline for Shoutrrr. |
+| `notifications.maxPerCycle` | `10` | Max **successful sends** per agent run; fewer unread lines → fewer sends. |
+| `notifications.cutEvery` | `100` | After this many consumed events, rewrite `~/.events` keeping only the unread tail (`[offset, EOF)`), then reset `offset`/`count` to 0. |
+
+\*All types: `git_login_failed`, `docker_login_failed`, `security_violation`, `trusted_image_deployed`, `container_deployed`, `container_deploy_failed`, `container_removed`, `cert_rate_limited`, `cert_issue_failed`.
+
+**Telegram custom Bot API host:** add `apiurl=` (default `https://api.telegram.org`). Optional `skiptlsverify=yes` for self-signed TLS proxies.
+
+```properties
+notifications.targets=telegram://TOKEN@telegram?chats=@CHANNEL&apiurl=http://127.0.0.1:8081
+notifications.targets=telegram://TOKEN@telegram?chats=@CHANNEL&apiurl=https://tg.example.com&skiptlsverify=yes
+```
+
+Payloads include the resolved host label, `namespace`, event `type`, timestamp, and redacted field values (URL userinfo / Bearer tokens / common secrets via the same redaction used in agent logs).
+
 ## Additional Settings
 
-Optional keys in `/home/ap/.apinfra` for logging verbosity and operation timeouts. Certificate / ACME settings are documented under [Certificate issuance and renewal](#certificate-issuance-and-renewal).
+Optional keys in `/home/ap/.apinfra` for logging verbosity and operation timeouts. Certificate / ACME settings are documented under [Certificate issuance and renewal](#certificate-issuance-and-renewal). Outbound push keys are under [Outbound notifications](#outbound-notifications-optional).
 
 <table>
 <thead>

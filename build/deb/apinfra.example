@@ -1,5 +1,11 @@
 namespace=dev
 
+# Optional host identity.
+# Alert title: serverName → hostPublicIP → OS hostname.
+# DNS preflight (prod/test ACME): when hostPublicIP is set, dig must return it.
+#serverName=dev-1
+#hostPublicIP=203.0.113.10
+
 # Config repository (HTTPS). Leave repoToken empty for public repos.
 repo=https://github.com/uservseatb/apinfra-demo-conf.git
 repoToken=
@@ -12,10 +18,6 @@ containerRegistryToken=
 
 # ACME certificate authority: letsencrypt (default) or zerossl.
 certs.provider=letsencrypt
-
-# Optional: if set, DNS preflight (dig +short) requires this IP among answers.
-# If unset, any IP from dig +short is enough.
-#certs.publicIP=203.0.113.10
 
 # Non–rate-limit failures: attempts before block, and block length in hours.
 certs.triesCount=3
@@ -49,6 +51,18 @@ certs.downgradeCertModeHours=24
 # Docker does not resize an existing network, recreate it to apply a new value.
 # proxyNetworkMTU=1350    # apinfra_proxy_net
 # projectNetworkMTU=1350  # each <project>_net
+
+# Outbound push notifications (Shoutrrr). Disabled unless notifications.enabled=true.
+# After each cycle the agent tails ~/.events from a saved byte offset and POSTs matching
+# events to the targets. Failures are WARN-only and never abort the deploy cycle.
+#notifications.enabled=false
+# Space-separated Shoutrrr URLs (required when enabled), e.g.:
+#notifications.targets=telegram://TOKEN@telegram?chats=-1001&apiurl=https://tg-proxy.example.com ntfy://ntfy.sh/my-alerts generic+https://collector.example.com/hook
+# Optional comma-separated event filter (omitted/empty/all → every event type).
+#notifications.events=all
+#notifications.timeout=10s
+#notifications.maxPerCycle=10
+#notifications.cutEvery=100
 
 # Optional ACME CA directory URLs (lego CADirURL). Omitted → public CA defaults.
 #certs.letsencrypt.directory=https://acme-v02.api.letsencrypt.org/directory

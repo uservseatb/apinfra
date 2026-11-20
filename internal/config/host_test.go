@@ -56,6 +56,8 @@ func TestLoadHostConfig_Defaults(t *testing.T) {
 		{"ConfigPath", cfg.ConfigPath, filepath.Join(home, ".apinfra")},
 		{"EnvPath", cfg.EnvPath, filepath.Join(home, ".env")},
 		{"Namespace", cfg.Namespace, "dev"},
+		{"ServerName", cfg.ServerName, ""},
+		{"HostPublicIP", cfg.HostPublicIP, ""},
 		{"RepoURL", cfg.RepoURL, "https://example.com/cfg.git"},
 		{"RepoBranch", cfg.RepoBranch, "main"},
 		{"RepoToken", cfg.RepoToken, ""},
@@ -80,6 +82,10 @@ func TestLoadHostConfig_Defaults(t *testing.T) {
 		{"LetsEncryptDirectory", cfg.LetsEncryptDirectory, "https://acme-v02.api.letsencrypt.org/directory"},
 		{"LetsEncryptStagingDirectory", cfg.LetsEncryptStagingDirectory, "https://acme-staging-v02.api.letsencrypt.org/directory"},
 		{"ZeroSSLDirectory", cfg.ZeroSSLDirectory, "https://acme.zerossl.com/v2/DV90"},
+		{"NotificationsEnabled", cfg.NotificationsEnabled, false},
+		{"NotificationTimeout", cfg.NotificationTimeout, 10 * time.Second},
+		{"NotificationMaxPerCycle", cfg.NotificationMaxPerCycle, 10},
+		{"NotificationCutEvery", cfg.NotificationCutEvery, 100},
 	}
 
 	for _, c := range checks {
@@ -101,7 +107,7 @@ func TestLoadHostConfig_Overrides(t *testing.T) {
 		"certs.provider=ZeroSSL",
 		"certs.zerossl.AcmeKid=kid",
 		"certs.zerossl.AcmeHmac=hmac",
-		"certs.publicIP=203.0.113.7",
+		"hostPublicIP=203.0.113.7",
 		"certs.triesCount=5",
 		"certs.blockHours=2",
 		"certs.downgradeCertModeHours=48",
@@ -131,7 +137,7 @@ func TestLoadHostConfig_Overrides(t *testing.T) {
 		{"CertsProvider", cfg.CertsProvider, config.CertsProviderZeroSSL},
 		{"AcmeKid", cfg.AcmeKid, "kid"},
 		{"AcmeHmac", cfg.AcmeHmac, "hmac"},
-		{"CertsPublicIP", cfg.CertsPublicIP, "203.0.113.7"},
+		{"HostPublicIP", cfg.HostPublicIP, "203.0.113.7"},
 		{"CertsTriesCount", cfg.CertsTriesCount, 5},
 		{"CertsBlockHours", cfg.CertsBlockHours, 2},
 		{"CertsDowngradeCertModeHours", cfg.CertsDowngradeCertModeHours, 48},
@@ -177,6 +183,26 @@ func TestLoadHostConfig_Errors(t *testing.T) {
 			name:    "zerossl_with_only_kid",
 			apinfra: minimalHost + "certs.provider=zerossl\ncerts.zerossl.AcmeKid=kid\n",
 			wantErr: "required when certs.provider=zerossl",
+		},
+		{
+			name:    "notifications_enabled_without_targets",
+			apinfra: minimalHost + "notifications.enabled=true\n",
+			wantErr: "notifications.targets is required",
+		},
+		{
+			name: "notifications_bad_event",
+			apinfra: minimalHost +
+				"notifications.enabled=true\n" +
+				"notifications.targets=generic+http://127.0.0.1:18100/hook\n" +
+				"notifications.events=not_a_real_event\n",
+			wantErr: "invalid notifications.events",
+		},
+		{
+			name: "notifications_bad_target",
+			apinfra: minimalHost +
+				"notifications.enabled=true\n" +
+				"notifications.targets=not-a-shoutrrr-url\n",
+			wantErr: "invalid notifications.targets",
 		},
 	}
 
