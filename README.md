@@ -53,8 +53,9 @@ projects:
       inbound:
         domain-name: example.com
       target:
-        service-name: frontend
-        port: 80
+        service:
+          name: frontend
+          port: 80
     config:
       cert-issue-type: prod
       cert-acme-email: ops@example.com
@@ -285,7 +286,7 @@ prod/
 > [!NOTE]
 > Environment folders (`dev`, `prod`, etc.) must sit directly at the **root** of the configuration repository.
 
-Each project folder (e.g. `storefront/`, `dashboard/`, `secure-api/`, `worker/`) is **one project** and must match a `projects[].name` entry in `settings.yml`. Inside the folder are `docker-compose.yml` and an optional `.env`. The `proxy.target` block in `settings.yml` points at a service in that compose file — the service that listens on the declared container port.
+Each project folder (e.g. `storefront/`, `dashboard/`, `secure-api/`, `worker/`) is **one project** and must match a `projects[].name` entry in `settings.yml`. For Compose-backed targets, the folder has `docker-compose.yml` and an optional `.env`, and `proxy.target.service` (`name` + `port`) points at a service in that compose file. URL-only projects (`proxy.target.url`) do **not** require a project folder or compose file.
 
 ##### `settings.yml` Example
 
@@ -300,8 +301,9 @@ projects:
       inbound:
         domain-name: storefront.example.com  # Domain mode → HTTPS
       target:
-        service-name: web                    # matches storefront/docker-compose.yml
-        port: 80                             # container port the web service listens on
+        service:
+          name: web                          # matches storefront/docker-compose.yml
+          port: 80                           # container port the web service listens on
     config:
       cert-issue-type: prod                  # domain: mock | prod | test | none (default: mock)
       # cert-update-time-sec: 90             # optional override (seconds)
@@ -313,8 +315,9 @@ projects:
       inbound:
         port: 3333                           # Host port Nginx listens on
       target:
-        service-name: app                    # matches dashboard/docker-compose.yml
-        port: 3000                           # container port the app service listens on
+        service:
+          name: app                          # matches dashboard/docker-compose.yml
+          port: 3000                         # container port the app service listens on
     config:
       cert-issue-type: none                  # port: mock | none only (default: none = plain HTTP)
 
@@ -324,10 +327,23 @@ projects:
       inbound:
         port: 8443                           # Host port with mock self-signed TLS
       target:
-        service-name: api
-        port: 8080
+        service:
+          name: api
+          port: 8080
     config:
       cert-issue-type: mock                  # self-signed HTTPS on :8443 (browsers will warn)
+
+  - name: edge-api
+    enabled: true
+    # no project folder / docker-compose.yml required — URL-only
+    proxy:
+      inbound:
+        domain-name: api.example.com
+      target:
+        url: https://api.example.org         # external origin; XOR with service
+    config:
+      cert-issue-type: prod
+      cert-acme-email: ops@example.com
 
   - name: worker
     enabled: true                            # No proxy — compose runs without Nginx routing
@@ -339,6 +355,7 @@ In this example:
 * **storefront** — available at `https://storefront.example.com` (Let's Encrypt `prod` cert via `cert-acme-email`; Nginx terminates TLS and proxies to the `web` container on port `80`).
 * **dashboard** — available at `http://<server-ip>:3333` (plain HTTP; `cert-issue-type: none`).
 * **secure-api** — available at `https://<server-ip>:8443` (mock self-signed certificate; port routing allows only `mock` or `none`).
+* **edge-api** — available at `https://api.example.com`; Nginx terminates TLS and reverse-proxies to `https://api.example.org` (SNI/`Host` from the URL host). No compose folder required.
 * **worker** — not exposed from outside (no `proxy`). It still runs and can reach the internet — e.g. a pull-model bot, cron-style job, or background worker.
 
 Full field reference: [settings.yml Field Schema](#settingsyml-field-schema).
@@ -597,6 +614,8 @@ Issuance behavior and ACME CA selection can be configured in the host agent conf
 
 `proxy.inbound.domain-name` and `proxy.inbound.port` are **mutually exclusive (XOR)** — exactly one must be defined.
 
+`proxy.target.url` and `proxy.target.service` are **mutually exclusive (XOR)** — exactly one must be defined.
+
 <table>
 <thead>
 <tr>
@@ -611,15 +630,37 @@ Issuance behavior and ACME CA selection can be configured in the host agent conf
 </tr>
 <tr>
 <td><code>proxy.inbound.port</code></td>
-<td>Distinct host port that Nginx listens to for this specific app. HTTP by default (<code>cert-issue-type: none</code>); set <code>mock</code> for self-signed HTTPS on that port.</td>
+<td>Distinct host port that Nginx listens to for this specific app. HTTP by default (<code>cert-issue-type: none</code>); set <code>mock</code> for self-signed HTTPS on that port. Cannot be combined with <code>proxy.target.url</code>.</td>
 </tr>
 <tr bgcolor="#f6f8fa">
-<td><code>proxy.target.service-name</code></td>
-<td><strong>Required</strong> when <code>proxy</code> is set. Must point to the service key in the project's <code>docker-compose.yml</code>. Inside the Nginx network the container is reached as <code>&lt;service_name&gt;.apinfra_&lt;project_name&gt;</code>.</td>
+<td><code>proxy.target.service</code></td>
+<td>Compose service upstream (<code>name</code> + <code>port</code>) — see table below.</td>
 </tr>
 <tr>
-<td><code>proxy.target.port</code></td>
-<td><strong>Required</strong> when <code>proxy</code> is set. Internal container target port.</td>
+<td><code>proxy.target.url</code></td>
+<td>External <code>http://</code> or <code>https://</code> origin (<code>scheme://host[:port]</code> only). <code>user:pass@</code>, path, query, or fragment is rejected.<br>
+Allowed only with <code>proxy.inbound.domain-name</code> and does not require a project folder or <code>docker-compose.yml</code> (if present, it is deployed independently).</td>
+</tr>
+</tbody>
+</table>
+
+#### `proxy.target.service`
+
+<table>
+<thead>
+<tr>
+<th align="left">Property</th>
+<th align="left">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr bgcolor="#f6f8fa">
+<td><code>name</code></td>
+<td><strong>Required</strong>. Service key in the project's <code>docker-compose.yml</code>.</td>
+</tr>
+<tr>
+<td><code>port</code></td>
+<td><strong>Required</strong>. Internal container target port.</td>
 </tr>
 </tbody>
 </table>
