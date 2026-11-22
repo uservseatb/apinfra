@@ -378,6 +378,18 @@ func domainProject(certType string) nginx.Project {
 	}
 }
 
+func domainURLProject(certType, targetURL string) nginx.Project {
+	return nginx.Project{
+		Name:          "edge",
+		Namespace:     testNamespace,
+		DomainName:    domainApp,
+		TargetURL:     targetURL,
+		CertIssueType: certType,
+		CertUpdateSec: certUpdateSec,
+		CertAcmeEmail: testEmail,
+	}
+}
+
 func portProject(certType string) nginx.Project {
 	return nginx.Project{
 		Name:           "api",
@@ -457,11 +469,13 @@ func TestProcessRouting_RendersConfPerRoutingMode(t *testing.T) {
 			wantFiles:     []string{"mockcerts/app.example.com/fullchain.pem"},
 		},
 		{
-			name:          "domain_none_plain_http",
-			project:       domainProject("none"),
-			confName:      appConfFile,
-			wantInConf:    []string{"listen 80;", "server_name app.example.com", upstreamWeb},
-			wantNotInConf: []string{"ssl_certificate", "return 301"},
+			name:       "domain_none_plain_http",
+			project:    domainProject("none"),
+			confName:   appConfFile,
+			wantInConf: []string{"listen 80;", "server_name app.example.com", upstreamWeb, "proxy_set_header Host $host"},
+			wantNotInConf: []string{
+				"ssl_certificate", "return 301", "proxy_ssl_server_name",
+			},
 			wantInstalled: map[string]string{domainApp: "none"},
 		},
 		{
@@ -480,6 +494,34 @@ func TestProcessRouting_RendersConfPerRoutingMode(t *testing.T) {
 			wantInstalled: map[string]string{"port-9999": "mock"},
 			wantACME:      []string{"port-9999:mock"},
 			wantFiles:     []string{"mockcerts/port-9999/fullchain.pem"},
+		},
+		{
+			name:     "domain_target_url_https_upstream",
+			project:  domainURLProject("prod", "https://api.example.org"),
+			confName: "dev_edge.conf",
+			wantInConf: []string{
+				`proxy_pass "https://api.example.org"`,
+				"proxy_ssl_server_name on",
+				"proxy_set_header Host api.example.org",
+				sslLiveApp + "/fullchain.pem",
+			},
+			wantNotInConf: []string{upstreamWeb, "proxy_set_header Host $host"},
+			wantInstalled: map[string]string{domainApp: "prod"},
+			wantACME:      []string{domainApp + ":prod"},
+			wantDNSCalls:  1,
+			wantFiles:     []string{"certbot/conf/live/app.example.com/fullchain.pem"},
+		},
+		{
+			name:     "domain_target_url_http_upstream",
+			project:  domainURLProject("none", "http://backend.internal:8080"),
+			confName: "dev_edge.conf",
+			wantInConf: []string{
+				`proxy_pass "http://backend.internal:8080"`,
+				"proxy_set_header Host backend.internal",
+				"listen 80;",
+			},
+			wantNotInConf: []string{"proxy_ssl_server_name", "ssl_certificate", "return 301"},
+			wantInstalled: map[string]string{domainApp: "none"},
 		},
 	}
 

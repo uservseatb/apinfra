@@ -968,6 +968,71 @@ func TestApply_RejectsEmptyCompose(t *testing.T) {
 	}
 }
 
+func TestApply_URLOnlySkipComposeNotStarted(t *testing.T) {
+	t.Parallel()
+
+	const edge = "edge"
+
+	env := newDockerEnv(t)
+	project := docker.Project{
+		Name:            edge,
+		NamespacePrefix: "dev",
+		TargetURL:       "https://api.example.org",
+	}
+
+	res, err := env.applyAll(t, project)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	want := []string{"pull-proxy", "up-proxy"}
+	if !slices.Equal(env.cli.calls, want) {
+		t.Fatalf("calls = %v, want %v (url-only must not pull/up app)", env.cli.calls, want)
+	}
+
+	if hasCall(env.cli.calls, "pull-app:"+edge) || hasCall(env.cli.calls, "up-app:"+edge) {
+		t.Fatalf("url-only project must not be in start plan: %v", env.cli.calls)
+	}
+
+	_, statErr := os.Stat(filepath.Join(env.infra, "apps", edge, "docker-compose.yml"))
+	if !os.IsNotExist(statErr) {
+		t.Fatalf("apps/%s/docker-compose.yml must not be written: %v", edge, statErr)
+	}
+
+	if res.ProxyHosts[edge] != "" {
+		t.Fatalf("ProxyHosts[%s] = %q, want empty (no compose upstream)", edge, res.ProxyHosts[edge])
+	}
+}
+
+func TestApply_URLTargetWithComposeStillStarted(t *testing.T) {
+	t.Parallel()
+
+	const edge = "edge"
+
+	env := newDockerEnv(t)
+	project := docker.Project{
+		Name:            edge,
+		NamespacePrefix: "dev",
+		ComposeYAML:     baseCompose,
+		TargetURL:       "https://api.example.org",
+	}
+
+	_, err := env.applyAll(t, project)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	want := []string{"pull-proxy", "up-proxy", "pull-app:" + edge, "up-app:" + edge}
+	if !slices.Equal(env.cli.calls, want) {
+		t.Fatalf("calls = %v, want %v", env.cli.calls, want)
+	}
+
+	_, statErr := os.Stat(filepath.Join(env.infra, "apps", edge, "docker-compose.yml"))
+	if statErr != nil {
+		t.Fatalf("compose present with TargetURL must still write app stack: %v", statErr)
+	}
+}
+
 func TestPruneImages(t *testing.T) {
 	t.Parallel()
 
@@ -1012,7 +1077,7 @@ func TestValidateProjects(t *testing.T) {
 
 				return p
 			}(),
-			wantErr: "proxy.target.service-name not found",
+			wantErr: "proxy.target.service.name not found",
 		},
 		{
 			name: "entry_point_by_container_name",
@@ -1049,6 +1114,28 @@ func TestValidateProjects(t *testing.T) {
 				return p
 			}(),
 			hostEnv:   map[string]string{"SHOP__REPLICAS": "2"},
+			wantNoErr: true,
+		},
+		{
+			name: "url_only_skips_empty_compose",
+			project: func() docker.Project {
+				p := shopProject("")
+				p.EntryPoint = ""
+				p.TargetURL = "https://api.example.org"
+
+				return p
+			}(),
+			wantNoErr: true,
+		},
+		{
+			name: "url_target_with_compose_skips_entry_point_check",
+			project: func() docker.Project {
+				p := shopProject(baseCompose)
+				p.EntryPoint = ""
+				p.TargetURL = "https://api.example.org"
+
+				return p
+			}(),
 			wantNoErr: true,
 		},
 	}

@@ -167,7 +167,7 @@ func buildEnabledProject(
 	name, namespace, nsPrefix string,
 	inboundPorts map[string]string,
 ) (ServiceConfig, bool, error) {
-	domainName, inboundPort, entryPoint, entryPointPort, err := parseProxy(mapping, name)
+	domainName, inboundPort, entryPoint, entryPointPort, targetURL, err := parseProxy(mapping, name)
 	if err != nil {
 		return emptyServiceConfig(), false, err
 	}
@@ -195,6 +195,7 @@ func buildEnabledProject(
 		InboundPort:       inboundPort,
 		EntryPoint:        entryPoint,
 		EntryPointPort:    entryPointPort,
+		TargetURL:         targetURL,
 		ProxyHost:         "",
 		CertIssueType:     certIssueType,
 		CertUpdateSec:     certUpdateSec,
@@ -419,30 +420,39 @@ func positiveInt64(val any, label string) (int64, error) {
 	return num, nil
 }
 
-func parseProxy(mapping map[string]any, projectName string) (string, string, string, string, error) {
+func parseProxy(mapping map[string]any, projectName string) (string, string, string, string, string, error) {
 	pv, hasProxy := mapping["proxy"]
 	if !hasProxy || pv == nil {
-		return "", "", "", "", nil
+		return "", "", "", "", "", nil
 	}
 
 	proxy, isMap := pv.(map[string]any)
 	if !isMap {
-		return "", "", "", "", formatSettingsError(
+		return "", "", "", "", "", formatSettingsError(
 			fmt.Sprintf("project %s: proxy must be a mapping", projectName),
 		)
 	}
 
 	domainName, inboundPort, err := parseProxyInbound(proxy, projectName)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", err
 	}
 
-	entryPoint, entryPointPort, err := parseProxyTarget(proxy, projectName)
+	entryPoint, entryPointPort, targetURL, err := parseProxyTarget(proxy, projectName)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", err
 	}
 
-	return domainName, inboundPort, entryPoint, entryPointPort, nil
+	if targetURL != "" && inboundPort != "" {
+		return "", "", "", "", "", formatSettingsError(
+			fmt.Sprintf(
+				"project %s: proxy.target.url is only allowed with proxy.inbound.domain-name",
+				projectName,
+			),
+		)
+	}
+
+	return domainName, inboundPort, entryPoint, entryPointPort, targetURL, nil
 }
 
 func parseProxyInbound(proxy map[string]any, projectName string) (string, string, error) {
@@ -505,22 +515,69 @@ func validateInboundExclusive(domainName, inboundPort, projectName string) error
 	}
 }
 
-func parseProxyTarget(proxy map[string]any, projectName string) (string, string, error) {
+func parseProxyTarget(proxy map[string]any, projectName string) (string, string, string, error) {
 	targetRaw, exists := proxy["target"]
 	if !exists || targetRaw == nil {
-		return "", "", formatSettingsError(
+		return "", "", "", formatSettingsError(
 			fmt.Sprintf("project %s: proxy.target is required", projectName),
 		)
 	}
 
 	target, isMap := targetRaw.(map[string]any)
 	if !isMap {
-		return "", "", formatSettingsError(
+		return "", "", "", formatSettingsError(
 			fmt.Sprintf("project %s: proxy.target must be a mapping", projectName),
 		)
 	}
 
-	entryPoint, _ := target["service-name"].(string)
+	urlRaw, _ := target["url"].(string)
+	urlRaw = strings.TrimSpace(urlRaw)
+
+	serviceRaw, hasServiceKey := target["service"]
+	hasURL := urlRaw != ""
+	hasService := hasServiceKey && serviceRaw != nil
+
+	switch {
+	case hasURL && hasService:
+		return "", "", "", formatSettingsError(
+			fmt.Sprintf(
+				"project %s: proxy.target.url and proxy.target.service are mutually exclusive",
+				projectName,
+			),
+		)
+	case hasURL:
+		normalized, err := validateTargetURL(urlRaw, projectName)
+		if err != nil {
+			return "", "", "", err
+		}
+
+		return "", "", normalized, nil
+	case hasService:
+		entryPoint, entryPointPort, err := parseProxyTargetService(serviceRaw, projectName)
+		if err != nil {
+			return "", "", "", err
+		}
+
+		return entryPoint, entryPointPort, "", nil
+	default:
+		return "", "", "", formatSettingsError(
+			fmt.Sprintf(
+				"project %s: proxy.target requires service or url",
+				projectName,
+			),
+		)
+	}
+}
+
+func parseProxyTargetService(serviceRaw any, projectName string) (string, string, error) {
+	service, isMap := serviceRaw.(map[string]any)
+	if !isMap {
+		return "", "", formatSettingsError(
+			fmt.Sprintf("project %s: proxy.target.service must be a mapping", projectName),
+		)
+	}
+
+	entryPoint, _ := service["name"].(string)
 	entryPoint = strings.TrimSpace(entryPoint)
 
 	err := validateServiceName(entryPoint, projectName)
@@ -529,8 +586,8 @@ func parseProxyTarget(proxy map[string]any, projectName string) (string, string,
 	}
 
 	entryPointPort, err := parsePortInRange(
-		target["port"],
-		fmt.Sprintf("project %s: proxy.target.port", projectName),
+		service["port"],
+		fmt.Sprintf("project %s: proxy.target.service.port", projectName),
 		minTargetPort,
 		maxTargetPort,
 	)
@@ -558,6 +615,7 @@ func emptyServiceConfig() ServiceConfig {
 		InboundPort:       "",
 		EntryPoint:        "",
 		EntryPointPort:    "",
+		TargetURL:         "",
 		ProxyHost:         "",
 		CertIssueType:     "",
 		CertUpdateSec:     0,

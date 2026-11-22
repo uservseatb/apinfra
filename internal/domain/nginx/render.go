@@ -2,9 +2,17 @@ package nginx
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 
 	"github.com/uservseatb/apinfra/internal/assets"
+)
+
+const (
+	proxyHostHeaderClient = "$host"
+	proxySSLServerNameOn  = "        proxy_ssl_server_name on;\n"
+	targetURLSchemeHTTPS  = "https"
 )
 
 type nginxTemplates struct {
@@ -49,7 +57,46 @@ func (s *RoutingService) syncNginxServiceConfigs(
 
 func hasProxyConf(cfg Project) bool {
 	return cfg.DomainName != "" ||
-		(cfg.InboundPort != "" && cfg.ProxyHost != "" && cfg.EntryPointPort != "")
+		(cfg.InboundPort != "" && hasComposeUpstream(cfg))
+}
+
+func hasComposeUpstream(cfg Project) bool {
+	return cfg.ProxyHost != "" && cfg.EntryPointPort != ""
+}
+
+func hasUpstream(cfg Project) bool {
+	return cfg.TargetURL != "" || hasComposeUpstream(cfg)
+}
+
+func proxyUpstream(cfg Project) (string, string, string) {
+	if cfg.TargetURL != "" {
+		hostHeader := proxyURLHost(cfg.TargetURL)
+		if strings.HasPrefix(cfg.TargetURL, targetURLSchemeHTTPS+"://") {
+			return cfg.TargetURL, hostHeader, proxySSLServerNameOn
+		}
+
+		return cfg.TargetURL, hostHeader, ""
+	}
+
+	return "http://" + net.JoinHostPort(cfg.ProxyHost, cfg.EntryPointPort), proxyHostHeaderClient, ""
+}
+
+func proxyURLHost(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" {
+		return raw
+	}
+
+	return parsed.Hostname()
+}
+
+func applyProxyUpstream(body string, cfg Project) string {
+	pass, hostHeader, sslDirectives := proxyUpstream(cfg)
+	body = strings.ReplaceAll(body, tplPlaceholder("proxyPass"), pass)
+	body = strings.ReplaceAll(body, tplPlaceholder("proxyHostHeader"), hostHeader)
+	body = strings.ReplaceAll(body, tplPlaceholder("proxySSLDirectives"), sslDirectives)
+
+	return body
 }
 
 func (s *RoutingService) rewriteConfigsIfCertsChanged(
@@ -163,7 +210,7 @@ func (s *RoutingService) renderServiceConfig(
 	switch {
 	case cfg.DomainName != "":
 		return s.renderDomainProxy(cfg, installedByName, tmpl.server, tmpl.ssl, tmpl.httpDomain), true
-	case cfg.InboundPort != "" && cfg.ProxyHost != "" && cfg.EntryPointPort != "":
+	case cfg.InboundPort != "" && hasComposeUpstream(cfg):
 		return s.renderPortProxy(cfg, installedByName, tmpl.httpPort, tmpl.httpsPort), true
 	default:
 		return "", false
@@ -179,10 +226,8 @@ func (s *RoutingService) renderDomainProxy(
 	if mode == CertModeNone {
 		body := httpDomainTemplate
 		body = strings.ReplaceAll(body, tplPlaceholder("domain"), cfg.DomainName)
-		body = strings.ReplaceAll(body, tplPlaceholder("host"), cfg.ProxyHost)
-		body = strings.ReplaceAll(body, tplPlaceholder("port"), cfg.EntryPointPort)
 
-		return body
+		return applyProxyUpstream(body, cfg)
 	}
 
 	var builder strings.Builder
@@ -193,14 +238,12 @@ func (s *RoutingService) renderDomainProxy(
 	name := cfg.DomainName
 
 	issued, metaOK := installedByName[name]
-	if metaOK && issued.Mode == mode && s.fs.CertFilesPresent(name, mode) &&
-		cfg.ProxyHost != "" && cfg.EntryPointPort != "" {
+	if metaOK && issued.Mode == mode && s.fs.CertFilesPresent(name, mode) && hasUpstream(cfg) {
 		block := sslTemplate
 		block = strings.ReplaceAll(block, tplPlaceholder("domain"), cfg.DomainName)
 		block = strings.ReplaceAll(block, tplPlaceholder("domainEscaped"), strings.ReplaceAll(cfg.DomainName, ".", "\\."))
 		block = strings.ReplaceAll(block, tplPlaceholder("certSSLDir"), certNginxSSLDir(name, mode))
-		block = strings.ReplaceAll(block, tplPlaceholder("host"), cfg.ProxyHost)
-		block = strings.ReplaceAll(block, tplPlaceholder("port"), cfg.EntryPointPort)
+		block = applyProxyUpstream(block, cfg)
 
 		builder.WriteString("\n\n")
 		builder.WriteString(block)
@@ -223,19 +266,15 @@ func (s *RoutingService) renderPortProxy(
 			body := httpsPortTemplate
 			body = strings.ReplaceAll(body, tplPlaceholder("inboundPort"), cfg.InboundPort)
 			body = strings.ReplaceAll(body, tplPlaceholder("certSSLDir"), certNginxSSLDir(name, CertModeMock))
-			body = strings.ReplaceAll(body, tplPlaceholder("host"), cfg.ProxyHost)
-			body = strings.ReplaceAll(body, tplPlaceholder("port"), cfg.EntryPointPort)
 
-			return body
+			return applyProxyUpstream(body, cfg)
 		}
 	}
 
 	body := httpPortTemplate
 	body = strings.ReplaceAll(body, tplPlaceholder("inboundPort"), cfg.InboundPort)
-	body = strings.ReplaceAll(body, tplPlaceholder("host"), cfg.ProxyHost)
-	body = strings.ReplaceAll(body, tplPlaceholder("port"), cfg.EntryPointPort)
 
-	return body
+	return applyProxyUpstream(body, cfg)
 }
 
 // confCertMode is the mode nginx confs are rendered for: settings none always wins;

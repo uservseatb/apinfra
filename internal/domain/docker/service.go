@@ -30,7 +30,7 @@ var (
 	errComposeValidationFailed = errors.New("compose validation failed")
 	errEmptyComposeFile        = errors.New("docker-compose.yml is empty")
 	errComposeConfigFailed     = errors.New("compose config invalid")
-	errProxyTargetMissing      = errors.New("proxy.target.service-name not found in compose")
+	errProxyTargetMissing      = errors.New("proxy.target.service.name not found in compose")
 	errNilContext              = errors.New("nil context")
 
 	// ErrLoginFailed is returned when registry docker login fails before pull/up.
@@ -223,13 +223,17 @@ func (s *Service) writeAllAppStacks(
 
 	for i := range projects {
 		project := &projects[i]
-		enabled = append(enabled, project.Name)
 
 		changed, services, err := s.writeAppStack(ctx, project, hostEnv)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
 
+		if skipCompose(*project) {
+			continue
+		}
+
+		enabled = append(enabled, project.Name)
 		desiredServices[composeProjectName(project.Name)] = services
 
 		if changed {
@@ -763,11 +767,21 @@ func (s *Service) writeProxyStack(ctx context.Context, projects []Project) (bool
 	return changed, pending, nil
 }
 
+func skipCompose(project Project) bool {
+	return project.TargetURL != "" && strings.TrimSpace(project.ComposeYAML) == ""
+}
+
 func (s *Service) writeAppStack(
 	ctx context.Context,
 	project *Project,
 	hostEnv map[string]string,
 ) (bool, map[string]struct{}, error) {
+	if skipCompose(*project) {
+		log.Printf("[docker] skip compose project=%s (url-only target)", project.Name)
+
+		return false, nil, nil
+	}
+
 	composeProject, sidecar, bindChanged, err := s.prepareProjectCompose(ctx, project, hostEnv)
 	if err != nil {
 		return false, nil, err
@@ -1048,6 +1062,12 @@ func (s *Service) dockerLogin(ctx context.Context, envs map[string]string) error
 }
 
 func (s *Service) validateOneProjectCompose(ctx context.Context, project Project, host map[string]string) error {
+	if skipCompose(project) {
+		log.Printf("[compose-validate] skip project=%s (url-only target)", project.Name)
+
+		return nil
+	}
+
 	raw, err := projectComposeRaw(project)
 	if err != nil {
 		return err

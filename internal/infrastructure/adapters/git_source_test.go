@@ -23,8 +23,9 @@ projects:
       inbound:
         domain-name: shop.example.com
       target:
-        service-name: web
-        port: 8080
+        service:
+          name: web
+          port: 8080
     config:
       cert-issue-type: none
   - name: worker
@@ -32,8 +33,9 @@ projects:
       inbound:
         domain-name: worker.example.com
       target:
-        service-name: app
-        port: 9000
+        service:
+          name: app
+          port: 9000
     config:
       cert-issue-type: none
 `
