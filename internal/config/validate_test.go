@@ -104,7 +104,7 @@ func TestReadSettings_ServiceName(t *testing.T) {
 			t.Parallel()
 
 			raw := doc(project("shop", ln(
-				"proxy:", "  inbound:", "    port: 9000", "  target:", "    service-name: "+tcase.service, "    port: 80",
+				"proxy:", "  inbound:", "    port: 9000", "  target:", "    service:", "      name: "+tcase.service, "      port: 80",
 			)))
 
 			_, err := readSettings(raw)
@@ -150,7 +150,7 @@ func TestReadSettings_Ports(t *testing.T) {
 	tests := []struct {
 		name    string
 		inbound string // value for proxy.inbound.port
-		target  string // value for proxy.target.port
+		target  string // value for proxy.target.service.port
 		wantErr string
 	}{
 		{name: "inbound_min", inbound: "1001", target: "80"},
@@ -174,7 +174,7 @@ func TestReadSettings_Ports(t *testing.T) {
 			t.Parallel()
 
 			raw := doc(project("shop", ln(
-				"proxy:", "  inbound:", "    port: "+tcase.inbound, "  target:", "    service-name: web", "    port: "+tcase.target,
+				"proxy:", "  inbound:", "    port: "+tcase.inbound, "  target:", "    service:", "      name: web", "      port: "+tcase.target,
 			)))
 
 			_, err := readSettings(raw)

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -129,7 +130,7 @@ func validateProjectName(name string) error {
 }
 
 func validateServiceName(name, projectName string) error {
-	label := fmt.Sprintf("project %s: proxy.target.service-name", projectName)
+	label := fmt.Sprintf("project %s: proxy.target.service.name", projectName)
 
 	if name == "" {
 		return formatSettingsError(label + " is required")
@@ -142,6 +143,51 @@ func validateServiceName(name, projectName string) error {
 	}
 
 	return nil
+}
+
+const (
+	targetURLSchemeHTTP  = "http"
+	targetURLSchemeHTTPS = "https"
+)
+
+// validateTargetURL checks proxy.target.url and returns a normalized absolute URL string.
+func validateTargetURL(raw, projectName string) (string, error) {
+	label := fmt.Sprintf("project %s: proxy.target.url", projectName)
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", formatSettingsError(label + " is required")
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", formatSettingsError(label + " is not a valid URL")
+	}
+
+	switch {
+	case parsed.Scheme != targetURLSchemeHTTP && parsed.Scheme != targetURLSchemeHTTPS:
+		return "", formatSettingsError(label + " must use http:// or https://")
+	case parsed.Host == "":
+		return "", formatSettingsError(label + " must include a host")
+	case parsed.User != nil:
+		return "", formatSettingsError(label + " must not include user:pass@")
+	case parsed.Path != "" && parsed.Path != "/":
+		return "", formatSettingsError(label + " must not include a path")
+	case parsed.RawQuery != "":
+		return "", formatSettingsError(label + " must not include a query string")
+	case parsed.Fragment != "":
+		return "", formatSettingsError(label + " must not include a fragment")
+	case parsed.Opaque != "":
+		return "", formatSettingsError(label + " must be an absolute http(s) URL")
+	}
+
+	// Origin only: scheme://host[:port] (empty or "/" path normalized away).
+	normalized := url.URL{ //nolint:exhaustruct_v5 // intentional subset for proxy_pass
+		Scheme: parsed.Scheme,
+		Host:   parsed.Host,
+	}
+
+	return normalized.String(), nil
 }
 
 func validateAcmeEmail(email, projectName string) error {

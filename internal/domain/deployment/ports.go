@@ -16,6 +16,7 @@ type ProjectSpec struct {
 	InboundPort       string
 	EntryPoint        string
 	EntryPointPort    string
+	TargetURL         string
 	CertIssueType     string
 	CertUpdateSec     int64
 	CertAcmeEmail     string

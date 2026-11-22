@@ -45,6 +45,7 @@ type Project struct {
 	DomainName     string
 	InboundPort    string
 	EntryPointPort string
+	TargetURL      string // absolute http(s) upstream; XOR with ProxyHost+EntryPointPort
 	ProxyHost      string // Docker DNS host for proxy_pass (service.apinfra_project)
 	CertIssueType  string
 	CertUpdateSec  int64

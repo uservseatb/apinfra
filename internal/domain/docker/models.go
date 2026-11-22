@@ -14,7 +14,8 @@ type Project struct {
 	ComposeYAML       string
 	SidecarEnvRaw     string
 	InboundPort       string
-	EntryPoint        string // proxy.target.service-name from settings
+	EntryPoint        string // proxy.target.service.name from settings
+	TargetURL         string // proxy.target.url; when set with empty ComposeYAML, SkipCompose
 	ProxyHost         string // Docker DNS host for nginx proxy_pass (service.apinfra_project)
 	AllowPortsMapping bool   // settings config.allow-ports-mapping; false → strip host ports
 	BindAssets        BindLoad

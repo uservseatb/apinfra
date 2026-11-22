@@ -73,7 +73,17 @@ func proxy(inbound ...string) []string {
 		out = append(out, "    "+line)
 	}
 
-	return append(out, "  target:", "    service-name: web", "    port: 8080")
+	return append(out, "  target:", "    service:", "      name: web", "      port: 8080")
+}
+
+func proxyURL(targetURL string) []string {
+	return ln(
+		"proxy:",
+		"  inbound:",
+		"    domain-name: api.example.com",
+		"  target:",
+		"    url: "+targetURL,
+	)
 }
 
 func cfg(lines ...string) []string {
@@ -189,6 +199,24 @@ func TestReadSettings_Projects(t *testing.T) {
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "shop",
 				DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
+				CertIssueType: "mock", CertUpdateSec: secMock,
+			}},
+		},
+		{
+			name: "domain_target_url_https",
+			raw:  doc(project("edge", proxyURL("https://api.example.org"))),
+			want: []config.ServiceConfig{{
+				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "edge",
+				DomainName: "api.example.com", TargetURL: "https://api.example.org",
+				CertIssueType: "mock", CertUpdateSec: secMock,
+			}},
+		},
+		{
+			name: "domain_target_url_http",
+			raw:  doc(project("edge", proxyURL("http://backend.internal:8080"))),
+			want: []config.ServiceConfig{{
+				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "edge",
+				DomainName: "api.example.com", TargetURL: "http://backend.internal:8080",
 				CertIssueType: "mock", CertUpdateSec: secMock,
 			}},
 		},
@@ -334,7 +362,7 @@ func TestReadSettings_ProxyAndCertErrors(t *testing.T) {
 		wantErr string
 	}{
 		{name: "proxy_not_mapping", project: project("shop", ln("proxy: nope")), wantErr: "proxy must be a mapping"},
-		{name: "inbound_missing", project: project("shop", ln("proxy:", "  target: {service-name: web, port: 80}")), wantErr: "proxy.inbound is required"},
+		{name: "inbound_missing", project: project("shop", ln("proxy:", "  target:", "    service:", "      name: web", "      port: 80")), wantErr: "proxy.inbound is required"},
 		{name: "inbound_not_mapping", project: project("shop", ln("proxy:", "  inbound: x")), wantErr: "proxy.inbound must be a mapping"},
 		{name: "inbound_empty", project: project("shop", ln("proxy:", "  inbound: {}")), wantErr: "requires domain-name or port"},
 		{
@@ -353,14 +381,79 @@ func TestReadSettings_ProxyAndCertErrors(t *testing.T) {
 			wantErr: "proxy.target must be a mapping",
 		},
 		{
-			name:    "target_service_missing",
-			project: project("shop", ln("proxy:", "  inbound:", "    port: 9000", "  target:", "    port: 80")),
-			wantErr: "service-name is required",
+			name:    "target_service_not_mapping",
+			project: project("shop", ln("proxy:", "  inbound:", "    port: 9000", "  target:", "    service: x")),
+			wantErr: "proxy.target.service must be a mapping",
 		},
 		{
-			name:    "target_port_missing",
-			project: project("shop", ln("proxy:", "  inbound:", "    port: 9000", "  target:", "    service-name: web")),
-			wantErr: "proxy.target.port is required",
+			name:    "target_service_name_missing",
+			project: project("shop", ln("proxy:", "  inbound:", "    port: 9000", "  target:", "    service:", "      port: 80")),
+			wantErr: "proxy.target.service.name is required",
+		},
+		{
+			name:    "target_service_port_missing",
+			project: project("shop", ln("proxy:", "  inbound:", "    port: 9000", "  target:", "    service:", "      name: web")),
+			wantErr: "proxy.target.service.port is required",
+		},
+		{
+			name:    "target_neither_service_nor_url",
+			project: project("shop", ln("proxy:", "  inbound:", "    domain-name: shop.example.com", "  target: {}")),
+			wantErr: "requires service or url",
+		},
+		{
+			name: "target_url_and_service",
+			project: project("shop", ln(
+				"proxy:",
+				"  inbound:",
+				"    domain-name: shop.example.com",
+				"  target:",
+				"    url: https://api.example.org",
+				"    service:",
+				"      name: web",
+				"      port: 80",
+			)),
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "target_url_with_inbound_port",
+			project: project("shop", ln(
+				"proxy:",
+				"  inbound:",
+				"    port: 9000",
+				"  target:",
+				"    url: https://api.example.org",
+			)),
+			wantErr: "only allowed with proxy.inbound.domain-name",
+		},
+		{
+			name:    "target_url_ftp",
+			project: project("shop", proxyURL("ftp://api.example.org")),
+			wantErr: "must use http:// or https://",
+		},
+		{
+			name:    "target_url_userinfo",
+			project: project("shop", proxyURL("https://user:pass@api.example.org")),
+			wantErr: "must not include user:pass@",
+		},
+		{
+			name:    "target_url_path",
+			project: project("shop", proxyURL("https://api.example.org/v1")),
+			wantErr: "must not include a path",
+		},
+		{
+			name:    "target_url_query",
+			project: project("shop", proxyURL("https://api.example.org?x=1")),
+			wantErr: "must not include a query string",
+		},
+		{
+			name:    "target_url_fragment",
+			project: project("shop", proxyURL("https://api.example.org#frag")),
+			wantErr: "must not include a fragment",
+		},
+		{
+			name:    "target_url_missing_host",
+			project: project("shop", proxyURL("https:///path")),
+			wantErr: "must include a host",
 		},
 		{
 			name:    "inbound_port_reused",

@@ -34,8 +34,9 @@ type ServiceConfig struct {
 	Name              string
 	DomainName        string
 	InboundPort       string
-	EntryPoint        string // proxy.target.service-name from settings
-	EntryPointPort    string // proxy.target.port
+	EntryPoint        string // proxy.target.service.name from settings
+	EntryPointPort    string // proxy.target.service.port
+	TargetURL         string // proxy.target.url (absolute http/https; XOR with service)
 	ProxyHost         string // Docker DNS host for nginx proxy_pass (service.apinfra_project)
 	CertIssueType     string
 	CertUpdateSec     int64

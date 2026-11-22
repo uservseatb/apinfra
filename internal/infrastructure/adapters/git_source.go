@@ -125,8 +125,8 @@ func (s *GitConfigSource) cloneAndReadSettings(
 	log.Printf("[update] loaded %d project(s)", len(configs))
 
 	for _, project := range configs {
-		log.Printf("[update]   project=%s domain=%s inboundPort=%s entry=%s targetPort=%s",
-			project.Name, project.DomainName, project.InboundPort, project.EntryPoint, project.EntryPointPort)
+		log.Printf("[update]   project=%s domain=%s inboundPort=%s entry=%s targetPort=%s targetURL=%s",
+			project.Name, project.DomainName, project.InboundPort, project.EntryPoint, project.EntryPointPort, project.TargetURL)
 	}
 
 	return repo, configs, nil
@@ -163,6 +163,7 @@ func projectSpecsFromRepo(
 			InboundPort:       cfg.InboundPort,
 			EntryPoint:        cfg.EntryPoint,
 			EntryPointPort:    cfg.EntryPointPort,
+			TargetURL:         cfg.TargetURL,
 			CertIssueType:     cfg.CertIssueType,
 			CertUpdateSec:     cfg.CertUpdateSec,
 			CertAcmeEmail:     cfg.CertAcmeEmail,
