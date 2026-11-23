@@ -403,6 +403,39 @@ func TestReadSettings_Projects(t *testing.T) {
 				},
 			}},
 		},
+		{
+			name: "project_cert_defaults_inherited_and_route_override",
+			raw: doc(project("shop", ln(
+				"proxies:",
+				"  - inbound:",
+				"      domain-name: shop.example.com",
+				"    target:",
+				"      service:",
+				"        name: web",
+				"        port: 80",
+				"  - inbound:",
+				"      domain-name: staging.example.com",
+				"    target:",
+				"      service:",
+				"        name: web",
+				"        port: 80",
+				"    config:",
+				"      cert-issue-type: none",
+			), cfg("cert-issue-type: prod", "cert-acme-email: ops@example.com"))),
+			want: []config.ServiceConfig{{
+				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "shop",
+				Routes: []config.Route{
+					{
+						DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "80",
+						CertIssueType: "prod", CertUpdateSec: secProd, CertAcmeEmail: "ops@example.com",
+					},
+					{
+						DomainName: "staging.example.com", EntryPoint: "web", EntryPointPort: "80",
+						CertIssueType: "none", CertAcmeEmail: "ops@example.com",
+					},
+				},
+			}},
+		},
 	}
 
 	for _, tcase := range tests {
@@ -600,6 +633,19 @@ func TestReadSettings_ProxyAndCertErrors(t *testing.T) {
 		{
 			name:    "port_routing_rejects_test",
 			project: project("shop", proxy("port: 9000"), cfg("cert-issue-type: test")),
+			wantErr: "must be mock or none",
+		},
+		{
+			name: "port_route_inherits_project_prod_default_rejected",
+			project: project("shop", ln(
+				"proxies:",
+				"  - inbound:",
+				"      port: 9000",
+				"    target:",
+				"      service:",
+				"        name: web",
+				"        port: 80",
+			), cfg("cert-issue-type: prod", "cert-acme-email: ops@example.com")),
 			wantErr: "must be mock or none",
 		},
 		{
