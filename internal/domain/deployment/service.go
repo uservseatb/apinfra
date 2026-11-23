@@ -177,10 +177,9 @@ func toDockerProjects(specs []ProjectSpec) []docker.Project {
 			NamespacePrefix:   spec.NamespacePrefix,
 			ComposeYAML:       spec.ComposeYAML,
 			SidecarEnvRaw:     spec.SidecarEnvRaw,
-			InboundPort:       spec.InboundPort,
-			EntryPoint:        spec.EntryPoint,
-			TargetURL:         spec.TargetURL,
-			ProxyHost:         "",
+			InboundPorts:      collectSpecInboundPorts(spec.Routes),
+			EntryPoints:       collectSpecEntryPoints(spec.Routes),
+			ProxyHosts:        nil,
 			AllowPortsMapping: spec.AllowPortsMapping,
 			BindAssets:        spec.BindAssets,
 		})
@@ -189,25 +188,65 @@ func toDockerProjects(specs []ProjectSpec) []docker.Project {
 	return out
 }
 
-func toNginxProjects(specs []ProjectSpec, proxyHosts map[string]string) []nginx.Project {
+func collectSpecInboundPorts(routes []Route) []string {
+	var ports []string
+
+	for _, route := range routes {
+		if route.InboundPort != "" {
+			ports = append(ports, route.InboundPort)
+		}
+	}
+
+	return ports
+}
+
+func collectSpecEntryPoints(routes []Route) []string {
+	seen := make(map[string]struct{}, len(routes))
+
+	var out []string
+
+	for _, route := range routes {
+		if route.EntryPoint == "" {
+			continue
+		}
+
+		if _, ok := seen[route.EntryPoint]; ok {
+			continue
+		}
+
+		seen[route.EntryPoint] = struct{}{}
+		out = append(out, route.EntryPoint)
+	}
+
+	return out
+}
+
+func toNginxProjects(specs []ProjectSpec, proxyHosts map[string]map[string]string) []nginx.Project {
 	out := make([]nginx.Project, 0, len(specs))
 	for _, spec := range specs {
-		proxyHost := ""
-		if proxyHosts != nil {
-			proxyHost = proxyHosts[spec.Name]
+		routes := make([]nginx.Route, 0, len(spec.Routes))
+		for _, route := range spec.Routes {
+			proxyHost := ""
+			if proxyHosts != nil && route.EntryPoint != "" {
+				proxyHost = proxyHosts[spec.Name][route.EntryPoint]
+			}
+
+			routes = append(routes, nginx.Route{
+				DomainName:     route.DomainName,
+				InboundPort:    route.InboundPort,
+				EntryPointPort: route.EntryPointPort,
+				TargetURL:      route.TargetURL,
+				ProxyHost:      proxyHost,
+				CertIssueType:  route.CertIssueType,
+				CertUpdateSec:  route.CertUpdateSec,
+				CertAcmeEmail:  route.CertAcmeEmail,
+			})
 		}
 
 		out = append(out, nginx.Project{
-			Name:           spec.Name,
-			Namespace:      spec.Namespace,
-			DomainName:     spec.DomainName,
-			InboundPort:    spec.InboundPort,
-			EntryPointPort: spec.EntryPointPort,
-			TargetURL:      spec.TargetURL,
-			ProxyHost:      proxyHost,
-			CertIssueType:  spec.CertIssueType,
-			CertUpdateSec:  spec.CertUpdateSec,
-			CertAcmeEmail:  spec.CertAcmeEmail,
+			Name:      spec.Name,
+			Namespace: spec.Namespace,
+			Routes:    routes,
 		})
 	}
 

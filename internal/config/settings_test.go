@@ -198,8 +198,10 @@ func TestReadSettings_Projects(t *testing.T) {
 			raw:  doc(project("shop", proxy("domain-name: shop.example.com"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "shop",
-				DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
-				CertIssueType: "mock", CertUpdateSec: secMock,
+				Routes: []config.Route{{
+					DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
+					CertIssueType: "mock", CertUpdateSec: secMock,
+				}},
 			}},
 		},
 		{
@@ -207,8 +209,10 @@ func TestReadSettings_Projects(t *testing.T) {
 			raw:  doc(project("edge", proxyURL("https://api.example.org"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "edge",
-				DomainName: "api.example.com", TargetURL: "https://api.example.org",
-				CertIssueType: "mock", CertUpdateSec: secMock,
+				Routes: []config.Route{{
+					DomainName: "api.example.com", TargetURL: "https://api.example.org",
+					CertIssueType: "mock", CertUpdateSec: secMock,
+				}},
 			}},
 		},
 		{
@@ -216,8 +220,10 @@ func TestReadSettings_Projects(t *testing.T) {
 			raw:  doc(project("edge", proxyURL("http://backend.internal:8080"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "edge",
-				DomainName: "api.example.com", TargetURL: "http://backend.internal:8080",
-				CertIssueType: "mock", CertUpdateSec: secMock,
+				Routes: []config.Route{{
+					DomainName: "api.example.com", TargetURL: "http://backend.internal:8080",
+					CertIssueType: "mock", CertUpdateSec: secMock,
+				}},
 			}},
 		},
 		{
@@ -226,8 +232,10 @@ func TestReadSettings_Projects(t *testing.T) {
 				cfg("cert-issue-type: prod", "cert-acme-email: ops@example.com"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "shop",
-				DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
-				CertIssueType: "prod", CertUpdateSec: secProd, CertAcmeEmail: "ops@example.com",
+				Routes: []config.Route{{
+					DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
+					CertIssueType: "prod", CertUpdateSec: secProd, CertAcmeEmail: "ops@example.com",
+				}},
 			}},
 		},
 		{
@@ -241,13 +249,17 @@ func TestReadSettings_Projects(t *testing.T) {
 			want: []config.ServiceConfig{
 				{
 					Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "a",
-					DomainName: "a.example.com", EntryPoint: "web", EntryPointPort: "8080",
-					CertIssueType: "test", CertUpdateSec: 120, CertAcmeEmail: "ops@example.com",
+					Routes: []config.Route{{
+						DomainName: "a.example.com", EntryPoint: "web", EntryPointPort: "8080",
+						CertIssueType: "test", CertUpdateSec: 120, CertAcmeEmail: "ops@example.com",
+					}},
 				},
 				{
 					Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "b",
-					DomainName: "b.example.com", EntryPoint: "web", EntryPointPort: "8080",
-					CertIssueType: "test", CertUpdateSec: 300, CertAcmeEmail: "ops@example.com",
+					Routes: []config.Route{{
+						DomainName: "b.example.com", EntryPoint: "web", EntryPointPort: "8080",
+						CertIssueType: "test", CertUpdateSec: 300, CertAcmeEmail: "ops@example.com",
+					}},
 				},
 			},
 		},
@@ -257,8 +269,10 @@ func TestReadSettings_Projects(t *testing.T) {
 				cfg("cert-issue-type: test", "cert-acme-email: ops@example.com"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "shop",
-				DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
-				CertIssueType: "test", CertUpdateSec: secTest, CertAcmeEmail: "ops@example.com",
+				Routes: []config.Route{{
+					DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
+					CertIssueType: "test", CertUpdateSec: secTest, CertAcmeEmail: "ops@example.com",
+				}},
 			}},
 		},
 		{
@@ -266,8 +280,10 @@ func TestReadSettings_Projects(t *testing.T) {
 			raw:  doc(project("shop", proxy("domain-name: shop.example.com"), cfg("cert-issue-type: none"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "shop",
-				DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
-				CertIssueType: "none",
+				Routes: []config.Route{{
+					DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
+					CertIssueType: "none",
+				}},
 			}},
 		},
 		{
@@ -275,7 +291,9 @@ func TestReadSettings_Projects(t *testing.T) {
 			raw:  doc(project("shop", proxy("port: 9000"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "shop",
-				InboundPort: "9000", EntryPoint: "web", EntryPointPort: "8080", CertIssueType: "none",
+				Routes: []config.Route{{
+					InboundPort: "9000", EntryPoint: "web", EntryPointPort: "8080", CertIssueType: "none",
+				}},
 			}},
 		},
 		{
@@ -283,8 +301,10 @@ func TestReadSettings_Projects(t *testing.T) {
 			raw:  doc(project("shop", proxy("port: 9000"), cfg("cert-issue-type: mock"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "shop",
-				InboundPort: "9000", EntryPoint: "web", EntryPointPort: "8080",
-				CertIssueType: "mock", CertUpdateSec: secMock,
+				Routes: []config.Route{{
+					InboundPort: "9000", EntryPoint: "web", EntryPointPort: "8080",
+					CertIssueType: "mock", CertUpdateSec: secMock,
+				}},
 			}},
 		},
 		{
@@ -292,7 +312,7 @@ func TestReadSettings_Projects(t *testing.T) {
 			raw:  doc(project("worker", cfg("allow-ports-mapping: true"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "worker",
-				CertIssueType: "mock", CertUpdateSec: secMock, AllowPortsMapping: true,
+				AllowPortsMapping: true,
 			}},
 		},
 		{
@@ -300,7 +320,7 @@ func TestReadSettings_Projects(t *testing.T) {
 			raw:  doc(project("worker", ln("allow-ports-mapping: true"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "worker",
-				CertIssueType: "mock", CertUpdateSec: secMock, AllowPortsMapping: true,
+				AllowPortsMapping: true,
 			}},
 		},
 		{
@@ -308,7 +328,6 @@ func TestReadSettings_Projects(t *testing.T) {
 			raw:  doc(project("worker", ln("allow-ports-mapping: true"), cfg("allow-ports-mapping: false"))),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "worker",
-				CertIssueType: "mock", CertUpdateSec: secMock,
 			}},
 		},
 		{
@@ -319,13 +338,103 @@ func TestReadSettings_Projects(t *testing.T) {
 			),
 			want: []config.ServiceConfig{{
 				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "on",
-				InboundPort: "9001", EntryPoint: "web", EntryPointPort: "8080", CertIssueType: "none",
+				Routes: []config.Route{{
+					InboundPort: "9001", EntryPoint: "web", EntryPointPort: "8080", CertIssueType: "none",
+				}},
 			}},
 		},
 		{
 			name: "all_disabled_yields_empty",
 			raw:  doc(project("off", ln("enabled: false"))),
 			want: nil,
+		},
+		{
+			name: "proxies_single_route",
+			raw: doc(project("shop", ln(
+				"proxies:",
+				"  - inbound:",
+				"      domain-name: shop.example.com",
+				"    target:",
+				"      service:",
+				"        name: web",
+				"        port: 8080",
+			))),
+			want: []config.ServiceConfig{{
+				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "shop",
+				Routes: []config.Route{{
+					DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
+					CertIssueType: "mock", CertUpdateSec: secMock,
+				}},
+			}},
+		},
+		{
+			name: "proxies_multi_route_per_route_cert",
+			raw: doc(project("admin", ln(
+				"proxies:",
+				"  - inbound:",
+				"      port: 3333",
+				"    target:",
+				"      service:",
+				"        name: console",
+				"        port: 8080",
+				"    config:",
+				"      cert-issue-type: mock",
+				"  - inbound:",
+				"      domain-name: admin.example.com",
+				"    target:",
+				"      service:",
+				"        name: console",
+				"        port: 8080",
+				"    config:",
+				"      cert-issue-type: prod",
+				"      cert-acme-email: ops@example.com",
+			))),
+			want: []config.ServiceConfig{{
+				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "admin",
+				Routes: []config.Route{
+					{
+						InboundPort: "3333", EntryPoint: "console", EntryPointPort: "8080",
+						CertIssueType: "mock", CertUpdateSec: secMock,
+					},
+					{
+						DomainName: "admin.example.com", EntryPoint: "console", EntryPointPort: "8080",
+						CertIssueType: "prod", CertUpdateSec: secProd, CertAcmeEmail: "ops@example.com",
+					},
+				},
+			}},
+		},
+		{
+			name: "project_cert_defaults_inherited_and_route_override",
+			raw: doc(project("shop", ln(
+				"proxies:",
+				"  - inbound:",
+				"      domain-name: shop.example.com",
+				"    target:",
+				"      service:",
+				"        name: web",
+				"        port: 80",
+				"  - inbound:",
+				"      domain-name: staging.example.com",
+				"    target:",
+				"      service:",
+				"        name: web",
+				"        port: 80",
+				"    config:",
+				"      cert-issue-type: none",
+			), cfg("cert-issue-type: prod", "cert-acme-email: ops@example.com"))),
+			want: []config.ServiceConfig{{
+				Namespace: testNamespace, NamespacePrefix: testNamespace, Name: "shop",
+				Routes: []config.Route{
+					{
+						DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "80",
+						CertIssueType: "prod", CertUpdateSec: secProd, CertAcmeEmail: "ops@example.com",
+					},
+					{
+						DomainName: "staging.example.com", EntryPoint: "web", EntryPointPort: "80",
+						CertIssueType: "none", CertAcmeEmail: "ops@example.com",
+					},
+				},
+			}},
 		},
 	}
 
@@ -338,16 +447,35 @@ func TestReadSettings_Projects(t *testing.T) {
 				t.Fatalf("ReadSettings: %v", err)
 			}
 
-			if len(got) != len(tcase.want) {
-				t.Fatalf("got %d projects (%+v), want %d", len(got), got, len(tcase.want))
-			}
-
-			for i := range got {
-				if got[i] != tcase.want[i] {
-					t.Fatalf("project[%d] = %+v, want %+v", i, got[i], tcase.want[i])
-				}
-			}
+			assertServiceConfigsEqual(t, got, tcase.want)
 		})
+	}
+}
+
+func assertServiceConfigsEqual(t *testing.T, got, want []config.ServiceConfig) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("got %d projects (%#v), want %d", len(got), got, len(want))
+	}
+
+	for i := range got {
+		if got[i].Namespace != want[i].Namespace ||
+			got[i].NamespacePrefix != want[i].NamespacePrefix ||
+			got[i].Name != want[i].Name ||
+			got[i].AllowPortsMapping != want[i].AllowPortsMapping {
+			t.Fatalf("project[%d] = %#v, want %#v", i, got[i], want[i])
+		}
+
+		if len(got[i].Routes) != len(want[i].Routes) {
+			t.Fatalf("project[%d].Routes = %#v, want %#v", i, got[i].Routes, want[i].Routes)
+		}
+
+		for j := range got[i].Routes {
+			if got[i].Routes[j] != want[i].Routes[j] {
+				t.Fatalf("project[%d].Routes[%d] = %#v, want %#v", i, j, got[i].Routes[j], want[i].Routes[j])
+			}
+		}
 	}
 }
 
@@ -426,6 +554,43 @@ func TestReadSettings_ProxyAndCertErrors(t *testing.T) {
 			wantErr: "only allowed with proxy.inbound.domain-name",
 		},
 		{
+			name: "proxy_and_proxies_mutual_exclusion",
+			project: project("shop", proxy("domain-name: shop.example.com"), ln(
+				"proxies:",
+				"  - inbound:",
+				"      domain-name: other.example.com",
+				"    target:",
+				"      service:",
+				"        name: web",
+				"        port: 80",
+			)),
+			wantErr: "proxy and proxies are mutually exclusive",
+		},
+		{
+			name:    "proxies_empty_rejected",
+			project: project("shop", ln("proxies: []")),
+			wantErr: "proxies must not be empty",
+		},
+		{
+			name: "duplicate_domain_across_routes",
+			project: project("shop", ln(
+				"proxies:",
+				"  - inbound:",
+				"      domain-name: shop.example.com",
+				"    target:",
+				"      service:",
+				"        name: web",
+				"        port: 80",
+				"  - inbound:",
+				"      domain-name: shop.example.com",
+				"    target:",
+				"      service:",
+				"        name: api",
+				"        port: 8080",
+			)),
+			wantErr: "already used by project",
+		},
+		{
 			name:    "target_url_ftp",
 			project: project("shop", proxyURL("ftp://api.example.org")),
 			wantErr: "must use http:// or https://",
@@ -468,6 +633,19 @@ func TestReadSettings_ProxyAndCertErrors(t *testing.T) {
 		{
 			name:    "port_routing_rejects_test",
 			project: project("shop", proxy("port: 9000"), cfg("cert-issue-type: test")),
+			wantErr: "must be mock or none",
+		},
+		{
+			name: "port_route_inherits_project_prod_default_rejected",
+			project: project("shop", ln(
+				"proxies:",
+				"  - inbound:",
+				"      port: 9000",
+				"    target:",
+				"      service:",
+				"        name: web",
+				"        port: 80",
+			), cfg("cert-issue-type: prod", "cert-acme-email: ops@example.com")),
 			wantErr: "must be mock or none",
 		},
 		{

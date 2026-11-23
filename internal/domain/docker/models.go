@@ -13,11 +13,10 @@ type Project struct {
 	NamespacePrefix   string
 	ComposeYAML       string
 	SidecarEnvRaw     string
-	InboundPort       string
-	EntryPoint        string // proxy.target.service.name from settings
-	TargetURL         string // proxy.target.url; when set with empty ComposeYAML, SkipCompose
-	ProxyHost         string // Docker DNS host for nginx proxy_pass (service.apinfra_project)
-	AllowPortsMapping bool   // settings config.allow-ports-mapping; false → strip host ports
+	InboundPorts      []string          // union of route inbound.port values
+	EntryPoints       []string          // unique proxy.target.service.name values
+	ProxyHosts        map[string]string // service name → Docker DNS host (filled during prepare)
+	AllowPortsMapping bool              // settings config.allow-ports-mapping; false → strip host ports
 	BindAssets        BindLoad
 }
 
@@ -59,10 +58,10 @@ type Config struct {
 // ApplyResult is the outcome of Apply for the deployment orchestrator / nginx.
 // ProxyRunning/ProxyReady come from the same ContainerList used for start planning
 // (or from a successful proxy up in this cycle) — no extra Docker API list.
-// ProxyHosts maps project name → computed Docker DNS host for nginx proxy_pass.
+// ProxyHosts maps project name → service name → computed Docker DNS host for nginx proxy_pass.
 type ApplyResult struct {
 	Restarted    bool
 	ProxyRunning bool
 	ProxyReady   bool
-	ProxyHosts   map[string]string
+	ProxyHosts   map[string]map[string]string
 }

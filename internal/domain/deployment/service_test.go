@@ -82,15 +82,17 @@ func newFake(mutate func(*fakeEnv)) *fakeEnv {
 		workspace: &deployment.Workspace{
 			Projects: []deployment.ProjectSpec{{
 				Name: projShop, Namespace: testNamespace, NamespacePrefix: testNamespace,
-				DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
-				CertIssueType: "prod", CertUpdateSec: 60, CertAcmeEmail: "ops@example.com",
+				Routes: []deployment.Route{{
+					DomainName: "shop.example.com", EntryPoint: "web", EntryPointPort: "8080",
+					CertIssueType: "prod", CertUpdateSec: 60, CertAcmeEmail: "ops@example.com",
+				}},
 				ComposeYAML: "services: {}",
 			}},
 			HostEnv: map[string]string{"SHOP__X": "1"},
 		},
 		apply: docker.ApplyResult{
 			ProxyRunning: true, ProxyReady: true, Restarted: false,
-			ProxyHosts: map[string]string{projShop: shopProxyHost},
+			ProxyHosts: map[string]map[string]string{projShop: {"web": shopProxyHost}},
 		},
 	}
 	if mutate != nil {
@@ -246,7 +248,7 @@ func TestExecuteUpdateCycle_PassesDockerResultToRouting(t *testing.T) {
 	env := newFake(func(f *fakeEnv) {
 		f.apply = docker.ApplyResult{
 			Restarted: true, ProxyRunning: true, ProxyReady: false,
-			ProxyHosts: map[string]string{projShop: shopProxyHost},
+			ProxyHosts: map[string]map[string]string{projShop: {"web": shopProxyHost}},
 		}
 	})
 	svc := deployment.NewGitOpsDeploymentService(testNamespace, testPublicIP, env, env, env, env)
@@ -266,15 +268,20 @@ func TestExecuteUpdateCycle_PassesDockerResultToRouting(t *testing.T) {
 	}
 
 	want := nginx.Project{
-		Name: projShop, Namespace: testNamespace, DomainName: "shop.example.com",
-		EntryPointPort: "8080", ProxyHost: shopProxyHost, CertIssueType: "prod",
-		CertUpdateSec: 60, CertAcmeEmail: "ops@example.com",
+		Name: projShop, Namespace: testNamespace,
+		Routes: []nginx.Route{{
+			DomainName: "shop.example.com", EntryPointPort: "8080", ProxyHost: shopProxyHost,
+			CertIssueType: "prod", CertUpdateSec: 60, CertAcmeEmail: "ops@example.com",
+		}},
 	}
-	if got.Projects[0] != want {
+	if len(got.Projects[0].Routes) != 1 || got.Projects[0].Routes[0] != want.Routes[0] {
 		t.Fatalf("nginx project = %+v, want %+v", got.Projects[0], want)
 	}
 
-	if len(env.dockerProjects) != 1 || env.dockerProjects[0].EntryPoint != "web" || env.dockerProjects[0].ProxyHost != "" {
+	if len(env.dockerProjects) != 1 ||
+		len(env.dockerProjects[0].EntryPoints) != 1 ||
+		env.dockerProjects[0].EntryPoints[0] != "web" ||
+		env.dockerProjects[0].ProxyHosts != nil {
 		t.Fatalf("docker projects = %+v", env.dockerProjects)
 	}
 }

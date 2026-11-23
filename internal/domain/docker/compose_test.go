@@ -502,8 +502,13 @@ networks:
 			t.Parallel()
 
 			env := newDockerEnv(t)
+
 			project := shopProject(tcase.compose)
-			project.EntryPoint = tcase.entryPoint
+			if tcase.entryPoint == "" {
+				project.EntryPoints = nil
+			} else {
+				project.EntryPoints = []string{tcase.entryPoint}
+			}
 
 			res, err := env.applyAll(t, project)
 			if err != nil {
@@ -561,7 +566,7 @@ networks:
 				t.Fatalf("aliases = %v, want %s", aliases, wantAlias)
 			}
 
-			if res.ProxyHosts[projShop] != wantAlias {
+			if res.ProxyHosts[projShop][tcase.entryPoint] != wantAlias {
 				t.Fatalf("ProxyHosts = %v, want %s", res.ProxyHosts, wantAlias)
 			}
 		})
@@ -695,7 +700,7 @@ func TestApply_ProxyStackPorts(t *testing.T) {
 
 			for i, port := range tcase.inbound {
 				p := namedProject(fmt.Sprintf("app%d", i))
-				p.InboundPort = port
+				p.InboundPorts = []string{port}
 				projects = append(projects, p)
 			}
 

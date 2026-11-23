@@ -49,16 +49,16 @@ Exposes the `frontend` service on `https://example.com` with an automated Let's 
 version: "1.0"
 projects:
   - name: webapp
-    proxy:
-      inbound:
-        domain-name: example.com
-      target:
-        service:
-          name: frontend
-          port: 80
-    config:
-      cert-issue-type: prod
-      cert-acme-email: ops@example.com
+    proxies:
+      - inbound:
+          domain-name: example.com
+        target:
+          service:
+            name: frontend
+            port: 80
+        config:
+          cert-issue-type: prod
+          cert-acme-email: ops@example.com
 ```
 
 ### 2. `dev/webapp/docker-compose.yml`
@@ -269,10 +269,7 @@ dev/
   storefront/
     docker-compose.yml
     .env
-  dashboard/
-    docker-compose.yml
-    .env
-  secure-api/
+  admin/
     docker-compose.yml
     .env
   worker/
@@ -286,7 +283,7 @@ prod/
 > [!NOTE]
 > Environment folders (`dev`, `prod`, etc.) must sit directly at the **root** of the configuration repository.
 
-Each project folder (e.g. `storefront/`, `dashboard/`, `secure-api/`, `worker/`) is **one project** and must match a `projects[].name` entry in `settings.yml`. For Compose-backed targets, the folder has `docker-compose.yml` and an optional `.env`, and `proxy.target.service` (`name` + `port`) points at a service in that compose file. URL-only projects (`proxy.target.url`) do **not** require a project folder or compose file.
+Each project folder (e.g. `storefront/`, `admin/`, `worker/`) is **one project** and must match a `projects[].name` entry in `settings.yml`. Prefer `projects[].proxies` (one Compose stack, many Nginx routes). Singular `projects[].proxy` remains a one-route compatibility alias. For Compose-backed targets, the folder has `docker-compose.yml` and an optional `.env`, and each route `target.service` (`name` + `port`) points at a service in that compose file. URL-only routes (`target.url`) do **not** require a project folder or compose file.
 
 ##### `settings.yml` Example
 
@@ -297,48 +294,58 @@ version: "1.0"
 projects:
   - name: storefront
     enabled: true
-    proxy:
-      inbound:
-        domain-name: storefront.example.com  # Domain mode → HTTPS
-      target:
-        service:
-          name: web                          # matches storefront/docker-compose.yml
-          port: 80                           # container port the web service listens on
-    config:
-      cert-issue-type: prod                  # domain: mock | prod | test | none (default: mock)
-      # cert-update-time-sec: 90             # optional override (seconds)
-      cert-acme-email: ops@example.com       # required for prod/test + domain-name
+    proxies:
+      - inbound:
+          domain-name: shop.example.com
+        target:
+          service:
+            name: web                        # matches storefront/docker-compose.yml
+            port: 80
+        config:
+          cert-issue-type: prod
+          cert-acme-email: ops@example.com
+      - inbound:
+          domain-name: api.example.com
+        target:
+          service:
+            name: api
+            port: 8080
+        config:
+          cert-issue-type: prod
+          cert-acme-email: ops@example.com
 
-  - name: dashboard
+  - name: admin
     enabled: true
-    proxy:
-      inbound:
-        port: 3333                           # Host port Nginx listens on
-      target:
-        service:
-          name: app                          # matches dashboard/docker-compose.yml
-          port: 3000                         # container port the app service listens on
+    proxies:
+      - inbound:
+          port: 3333                         # Host port Nginx listens on
+        target:
+          service:
+            name: console
+            port: 8080
+        config:
+          cert-issue-type: mock              # self-signed HTTPS on :3333
+      - inbound:
+          domain-name: admin.example.com
+        target:
+          service:
+            name: console
+            port: 8080
+        config:
+          cert-issue-type: prod
+          cert-acme-email: ops@example.com
     config:
-      cert-issue-type: none                  # port: mock | none only (default: none = plain HTTP)
-
-  - name: secure-api
-    enabled: true
-    proxy:
-      inbound:
-        port: 8443                           # Host port with mock self-signed TLS
-      target:
-        service:
-          name: api
-          port: 8080
-    config:
-      cert-issue-type: mock                  # self-signed HTTPS on :8443 (browsers will warn)
+      # Project-level only (not per-route). Unrelated to Nginx inbound.port —
+      # shown here to illustrate shared project config (Compose host ports).
+      # Cert fields may also be set here as defaults when a route omits its own config.
+      allow-ports-mapping: true
 
   - name: edge-api
     enabled: true
-    # no project folder / docker-compose.yml required — URL-only
+    # singular proxy still works — one route (compatibility)
     proxy:
       inbound:
-        domain-name: api.example.com
+        domain-name: edge.example.com
       target:
         url: https://api.example.org         # external origin; XOR with service
     config:
@@ -346,21 +353,20 @@ projects:
       cert-acme-email: ops@example.com
 
   - name: worker
-    enabled: true                            # No proxy — compose runs without Nginx routing
+    enabled: true                            # No proxies / proxy — compose only
     config: {}
 ```
 
 In this example:
 
-* **storefront** — available at `https://storefront.example.com` (Let's Encrypt `prod` cert via `cert-acme-email`; Nginx terminates TLS and proxies to the `web` container on port `80`).
-* **dashboard** — available at `http://<server-ip>:3333` (plain HTTP; `cert-issue-type: none`).
-* **secure-api** — available at `https://<server-ip>:8443` (mock self-signed certificate; port routing allows only `mock` or `none`).
-* **edge-api** — available at `https://api.example.com`; Nginx terminates TLS and reverse-proxies to `https://api.example.org` (SNI/`Host` from the URL host). No compose folder required.
-* **worker** — not exposed from outside (no `proxy`). It still runs and can reach the internet — e.g. a pull-model bot, cron-style job, or background worker.
+* **storefront** — one Compose stack with two domain routes (`shop` → `web:80`, `api` → `api:8080`); each route has its own Nginx conf and cert mode.
+* **admin** — same `console` service exposed on host port `3333` (mock TLS) and at `admin.example.com` (Let's Encrypt `prod`).
+* **edge-api** — singular `proxy` compatibility form; Nginx reverse-proxies to an external URL. No compose folder required.
+* **worker** — not exposed from outside (no `proxies` / `proxy`). It still runs and can reach the internet — e.g. a pull-model bot, cron-style job, or background worker.
 
 Full field reference: [settings.yml Field Schema](#settingsyml-field-schema).
 
-**Example `storefront/docker-compose.yml`** (service `web` listens on port `80`):
+**Example `storefront/docker-compose.yml`** (services targeted by `proxies`):
 ```yaml
 services:
   web:
@@ -368,23 +374,18 @@ services:
     expose:
       - "80"
     restart: unless-stopped
-```
-
-**Example `dashboard/docker-compose.yml`** (service `app` listens on port `3000`):
-```yaml
-services:
-  app:
-    image: ghcr.io/example/dashboard:${APP_IMAGE_TAG}
+  api:
+    image: ghcr.io/example/storefront-api:${API_IMAGE_TAG}
     expose:
-      - "3000"
+      - "8080"
     restart: unless-stopped
 ```
 
-**Example `secure-api/docker-compose.yml`** (service `api` listens on port `8080`):
+**Example `admin/docker-compose.yml`** (shared by both admin routes):
 ```yaml
 services:
-  api:
-    image: ghcr.io/example/secure-api:${API_IMAGE_TAG}
+  console:
+    image: ghcr.io/example/admin-console:${CONSOLE_IMAGE_TAG}
     expose:
       - "8080"
     restart: unless-stopped
@@ -600,21 +601,29 @@ Issuance behavior and ACME CA selection can be configured in the host agent conf
 <td>Optional. Defaults to <code>true</code>. If <code>false</code>, the project is bypassed during deployment cycles.</td>
 </tr>
 <tr bgcolor="#f6f8fa">
-<td><code>proxy</code></td>
-<td>Optional. Routing and reverse proxy rules. If omitted, no Nginx proxy configs will be generated.</td>
+<td><code>proxies</code></td>
+<td>Optional. Preferred form: a non-empty sequence of route objects (see route rules below). Mutually exclusive with <code>proxy</code>.</td>
 </tr>
 <tr>
+<td><code>proxy</code></td>
+<td>Optional. Compatibility alias for a single route (same shape as one <code>proxies[]</code> element). Mutually exclusive with <code>proxies</code>. If both <code>proxy</code> and <code>proxies</code> are omitted, no Nginx routes are generated (compose-only).</td>
+</tr>
+<tr bgcolor="#f6f8fa">
 <td><code>config</code></td>
-<td>Optional. Per-project settings (certificate issuance, port publishing, etc.).</td>
+<td>Optional. Project-level settings. <code>allow-ports-mapping</code> is always project-scoped. Certificate fields here are <strong>defaults</strong> for routes that omit their own <code>config</code>.</td>
 </tr>
 </tbody>
 </table>
 
-### `proxy` Block Rules
+### Route Block Rules (`proxies[]` / singular `proxy`)
 
-`proxy.inbound.domain-name` and `proxy.inbound.port` are **mutually exclusive (XOR)** — exactly one must be defined.
+Each route has `inbound` + `target`, plus optional per-route `config` for certificate fields.
 
-`proxy.target.url` and `proxy.target.service` are **mutually exclusive (XOR)** — exactly one must be defined.
+`inbound.domain-name` and `inbound.port` are **mutually exclusive (XOR)** — exactly one must be defined.
+
+`target.url` and `target.service` are **mutually exclusive (XOR)** — exactly one must be defined.
+
+Inbound ports and domain names must be unique across all routes/projects in the settings file.
 
 <table>
 <thead>
@@ -625,26 +634,30 @@ Issuance behavior and ACME CA selection can be configured in the host agent conf
 </thead>
 <tbody>
 <tr bgcolor="#f6f8fa">
-<td><code>proxy.inbound.domain-name</code></td>
+<td><code>inbound.domain-name</code></td>
 <td>Public hostname used for Nginx routing and HTTPS certificate tracking.</td>
 </tr>
 <tr>
-<td><code>proxy.inbound.port</code></td>
-<td>Distinct host port that Nginx listens to for this specific app. HTTP by default (<code>cert-issue-type: none</code>); set <code>mock</code> for self-signed HTTPS on that port. Cannot be combined with <code>proxy.target.url</code>.</td>
+<td><code>inbound.port</code></td>
+<td>Distinct host port that Nginx listens on for this route. HTTP by default (<code>cert-issue-type: none</code>); set <code>mock</code> for self-signed HTTPS on that port. Cannot be combined with <code>target.url</code>.</td>
 </tr>
 <tr bgcolor="#f6f8fa">
-<td><code>proxy.target.service</code></td>
+<td><code>target.service</code></td>
 <td>Compose service upstream (<code>name</code> + <code>port</code>) — see table below.</td>
 </tr>
 <tr>
-<td><code>proxy.target.url</code></td>
+<td><code>target.url</code></td>
 <td>External <code>http://</code> or <code>https://</code> origin (<code>scheme://host[:port]</code> only). <code>user:pass@</code>, path, query, or fragment is rejected.<br>
-Allowed only with <code>proxy.inbound.domain-name</code> and does not require a project folder or <code>docker-compose.yml</code> (if present, it is deployed independently).</td>
+Allowed only with <code>inbound.domain-name</code> and does not require a project folder or <code>docker-compose.yml</code> (if present, it is deployed independently).</td>
+</tr>
+<tr bgcolor="#f6f8fa">
+<td><code>config</code></td>
+<td>Optional. Per-route certificate fields (<code>cert-issue-type</code>, <code>cert-acme-email</code>, <code>cert-update-time-sec</code>). Overrides project-level <code>config</code> defaults for this route.</td>
 </tr>
 </tbody>
 </table>
 
-#### `proxy.target.service`
+#### `target.service`
 
 <table>
 <thead>
@@ -665,16 +678,16 @@ Allowed only with <code>proxy.inbound.domain-name</code> and does not require a 
 </tbody>
 </table>
 
-### `config` Settings (per project)
+### `config` Settings
 
-Per-project settings under `projects[].config`. Certificate fields apply **per project**, not globally on the host.
+Certificate fields may appear on `projects[].config` (defaults) and/or each route's `config` (overrides). `allow-ports-mapping` is project-level only.
 
-Allowed `cert-issue-type` values depend on the inbound routing mode:
+Allowed `cert-issue-type` values depend on the route inbound mode:
 
 | Inbound | Allowed `cert-issue-type` | Default when omitted |
 | --- | --- | --- |
-| `proxy.inbound.domain-name` | `mock`, `prod`, `test`, `none` | `mock` |
-| `proxy.inbound.port` | `mock`, `none` only (`prod` / `test` are rejected) | `none` |
+| `inbound.domain-name` | `mock`, `prod`, `test`, `none` | `mock` |
+| `inbound.port` | `mock`, `none` only (`prod` / `test` are rejected) | `none` |
 
 > [!NOTE]
 > Port routing cannot use Let's Encrypt (`prod` / `test`) — there is no public hostname for ACME. Use `mock` for self-signed HTTPS on the host port, or `none` for plain HTTP.
@@ -701,7 +714,7 @@ Allowed `cert-issue-type` values depend on the inbound routing mode:
 </tr>
 <tr>
 <td nowrap><code>allow-ports-mapping</code></td>
-<td>Optional. Defaults to <code>false</code>. When <code>false</code> (default) or omitted, any explicit <code>ports:</code> mappings in the project's <code>docker-compose.yml</code> are stripped before the stack is started. Set to <code>true</code> only if the project must publish host ports: ports without a host IP bind to <code>127.0.0.1</code>; existing host IPs are kept except <code>0.0.0.0</code> / <code>::</code>, which are rejected.</td>
+<td>Project-level only. Defaults to <code>false</code>. When <code>false</code> (default) or omitted, any explicit <code>ports:</code> mappings in the project's <code>docker-compose.yml</code> are stripped before the stack is started. Set to <code>true</code> only if the project must publish host ports: ports without a host IP bind to <code>127.0.0.1</code>; existing host IPs are kept except <code>0.0.0.0</code> / <code>::</code>, which are rejected.</td>
 </tr>
 </tbody>
 </table>

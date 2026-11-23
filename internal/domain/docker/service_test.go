@@ -196,7 +196,7 @@ func (e *dockerEnv) read(t *testing.T, path string) string {
 }
 
 func shopProject(compose string) docker.Project {
-	return docker.Project{Name: projShop, NamespacePrefix: "dev", ComposeYAML: compose, EntryPoint: "web"}
+	return docker.Project{Name: projShop, NamespacePrefix: "dev", ComposeYAML: compose, EntryPoints: []string{"web"}}
 }
 
 func namedProject(name string) docker.Project {
@@ -269,7 +269,7 @@ func TestApply_FirstRunPullsThenStartsProxyAndApps(t *testing.T) {
 		t.Fatalf("result = %+v, want restarted, proxy running but not ready yet", res)
 	}
 
-	if got := res.ProxyHosts[projShop]; got != "web.apinfra_shop" {
+	if got := res.ProxyHosts[projShop]["web"]; got != "web.apinfra_shop" {
 		t.Fatalf("ProxyHosts = %v", res.ProxyHosts)
 	}
 
@@ -373,7 +373,7 @@ func TestApply_RestartDecisions(t *testing.T) {
 			name: "inbound_port_change_restarts_proxy",
 			second: []docker.Project{func() docker.Project {
 				p := shopProject(baseCompose)
-				p.InboundPort = "9999"
+				p.InboundPorts = []string{"9999"}
 
 				return p
 			}()},
@@ -520,7 +520,7 @@ func TestApply_WithoutApplyContainersOnlyWritesFiles(t *testing.T) {
 		t.Fatalf("compose must still be written: %v", statErr)
 	}
 
-	if res.ProxyHosts[projShop] != "web.apinfra_shop" {
+	if res.ProxyHosts[projShop]["web"] != "web.apinfra_shop" {
 		t.Fatalf("ProxyHosts = %v", res.ProxyHosts)
 	}
 }
@@ -747,7 +747,7 @@ func TestApply_ProxyPendingRetriesAfterLoginFailure(t *testing.T) {
 	env := newDockerEnv(t)
 	projectV1 := shopProject(baseCompose)
 	projectV2 := shopProject(baseCompose)
-	projectV2.InboundPort = "9999"
+	projectV2.InboundPorts = []string{"9999"}
 	creds := map[string]string{keyRegHost: "https://ghcr.io", keyRegUser: "bot", keyRegToken: "s3cret"}
 
 	_, err := env.apply(t, []docker.Project{projectV1}, nil, nil, true)
@@ -977,7 +977,6 @@ func TestApply_URLOnlySkipComposeNotStarted(t *testing.T) {
 	project := docker.Project{
 		Name:            edge,
 		NamespacePrefix: "dev",
-		TargetURL:       "https://api.example.org",
 	}
 
 	res, err := env.applyAll(t, project)
@@ -999,8 +998,8 @@ func TestApply_URLOnlySkipComposeNotStarted(t *testing.T) {
 		t.Fatalf("apps/%s/docker-compose.yml must not be written: %v", edge, statErr)
 	}
 
-	if res.ProxyHosts[edge] != "" {
-		t.Fatalf("ProxyHosts[%s] = %q, want empty (no compose upstream)", edge, res.ProxyHosts[edge])
+	if len(res.ProxyHosts[edge]) != 0 {
+		t.Fatalf("ProxyHosts[%s] = %v, want empty (no compose upstream)", edge, res.ProxyHosts[edge])
 	}
 }
 
@@ -1014,7 +1013,6 @@ func TestApply_URLTargetWithComposeStillStarted(t *testing.T) {
 		Name:            edge,
 		NamespacePrefix: "dev",
 		ComposeYAML:     baseCompose,
-		TargetURL:       "https://api.example.org",
 	}
 
 	_, err := env.applyAll(t, project)
@@ -1029,7 +1027,7 @@ func TestApply_URLTargetWithComposeStillStarted(t *testing.T) {
 
 	_, statErr := os.Stat(filepath.Join(env.infra, "apps", edge, "docker-compose.yml"))
 	if statErr != nil {
-		t.Fatalf("compose present with TargetURL must still write app stack: %v", statErr)
+		t.Fatalf("compose present must still write app stack: %v", statErr)
 	}
 }
 
@@ -1073,7 +1071,7 @@ func TestValidateProjects(t *testing.T) {
 			name: "entry_point_not_in_compose",
 			project: func() docker.Project {
 				p := shopProject(baseCompose)
-				p.EntryPoint = "api"
+				p.EntryPoints = []string{"api"}
 
 				return p
 			}(),
@@ -1083,7 +1081,7 @@ func TestValidateProjects(t *testing.T) {
 			name: "entry_point_by_container_name",
 			project: func() docker.Project {
 				p := shopProject("services:\n  web:\n    image: nginx\n    container_name: shop-web\n")
-				p.EntryPoint = "shop-web"
+				p.EntryPoints = []string{"shop-web"}
 
 				return p
 			}(),
@@ -1120,8 +1118,7 @@ func TestValidateProjects(t *testing.T) {
 			name: "url_only_skips_empty_compose",
 			project: func() docker.Project {
 				p := shopProject("")
-				p.EntryPoint = ""
-				p.TargetURL = "https://api.example.org"
+				p.EntryPoints = nil
 
 				return p
 			}(),
@@ -1131,8 +1128,7 @@ func TestValidateProjects(t *testing.T) {
 			name: "url_target_with_compose_skips_entry_point_check",
 			project: func() docker.Project {
 				p := shopProject(baseCompose)
-				p.EntryPoint = ""
-				p.TargetURL = "https://api.example.org"
+				p.EntryPoints = nil
 
 				return p
 			}(),
@@ -1239,7 +1235,7 @@ func TestValidateProjects_RejectsHostBindMounts(t *testing.T) {
 
 			env := newDockerEnvWithTrusted(t, trustedPath)
 			project := shopProject(tcase.compose)
-			project.EntryPoint = ""
+			project.EntryPoints = nil
 
 			err := env.svc.ValidateProjects(context.Background(), []docker.Project{project}, nil)
 			if tcase.wantErr == "" {
@@ -1476,7 +1472,7 @@ func TestApply_RejectsBindMountBeforeUp(t *testing.T) {
 
 	env := newDockerEnv(t)
 	project := shopProject("services:\n  web:\n    image: nginx\n    volumes:\n      - /root:/root\n")
-	project.EntryPoint = ""
+	project.EntryPoints = nil
 
 	_, err := env.apply(t, []docker.Project{project}, nil, nil, true)
 	if err == nil || !strings.Contains(err.Error(), "volume policy violation") {
@@ -1497,7 +1493,7 @@ func TestApply_RejectsTmpfsBeforeUp(t *testing.T) {
 
 	env := newDockerEnv(t)
 	project := shopProject("services:\n  web:\n    image: nginx\n    volumes:\n      - type: tmpfs\n        target: /tmp\n")
-	project.EntryPoint = ""
+	project.EntryPoints = nil
 
 	_, err := env.apply(t, []docker.Project{project}, nil, nil, true)
 	if err == nil || !strings.Contains(err.Error(), "volume policy violation") {
@@ -1529,7 +1525,7 @@ func TestApply_ProjectLocalBindForcedReadOnly(t *testing.T) {
         target: /etc/app/extra.txt
         read_only: false
 `)
-	project.EntryPoint = ""
+	project.EntryPoints = nil
 	project.BindAssets = docker.BindLoad{
 		Files: map[string][]byte{
 			"config.txt": []byte("cfg"),
@@ -1579,7 +1575,7 @@ func TestValidateProjects_RejectsTmpfs(t *testing.T) {
 
 	env := newDockerEnv(t)
 	project := shopProject("services:\n  web:\n    image: nginx\n    volumes:\n      - type: tmpfs\n        target: /tmp\n")
-	project.EntryPoint = ""
+	project.EntryPoints = nil
 
 	err := env.svc.ValidateProjects(context.Background(), []docker.Project{project}, nil)
 	if err == nil || !strings.Contains(err.Error(), "volume policy violation") {

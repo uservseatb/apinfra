@@ -34,7 +34,7 @@ const (
 	domainApp     = "app.example.com"
 	domainOld     = "old.example.com"
 	testEmail     = "ops@example.com"
-	appConfFile   = "dev_web.conf"
+	appConfFile   = "dev_web__app.example.com.conf"
 	upstreamWeb   = `proxy_pass "http://web.apinfra_web:80"`
 	sslLiveApp    = "/etc/nginx/ssl/live/app.example.com"
 	mockDirApp    = "/etc/nginx/mockcerts/app.example.com"
@@ -367,38 +367,44 @@ func (e *routeEnv) fileExists(rel string) bool {
 
 func domainProject(certType string) nginx.Project {
 	return nginx.Project{
-		Name:           "web",
-		Namespace:      testNamespace,
-		DomainName:     domainApp,
-		EntryPointPort: "80",
-		ProxyHost:      "web.apinfra_web",
-		CertIssueType:  certType,
-		CertUpdateSec:  certUpdateSec,
-		CertAcmeEmail:  testEmail,
+		Name:      "web",
+		Namespace: testNamespace,
+		Routes: []nginx.Route{{
+			DomainName:     domainApp,
+			EntryPointPort: "80",
+			ProxyHost:      "web.apinfra_web",
+			CertIssueType:  certType,
+			CertUpdateSec:  certUpdateSec,
+			CertAcmeEmail:  testEmail,
+		}},
 	}
 }
 
 func domainURLProject(certType, targetURL string) nginx.Project {
 	return nginx.Project{
-		Name:          "edge",
-		Namespace:     testNamespace,
-		DomainName:    domainApp,
-		TargetURL:     targetURL,
-		CertIssueType: certType,
-		CertUpdateSec: certUpdateSec,
-		CertAcmeEmail: testEmail,
+		Name:      "edge",
+		Namespace: testNamespace,
+		Routes: []nginx.Route{{
+			DomainName:    domainApp,
+			TargetURL:     targetURL,
+			CertIssueType: certType,
+			CertUpdateSec: certUpdateSec,
+			CertAcmeEmail: testEmail,
+		}},
 	}
 }
 
 func portProject(certType string) nginx.Project {
 	return nginx.Project{
-		Name:           "api",
-		Namespace:      testNamespace,
-		InboundPort:    "9999",
-		EntryPointPort: "8080",
-		ProxyHost:      "api.apinfra_api",
-		CertIssueType:  certType,
-		CertUpdateSec:  certUpdateSec,
+		Name:      "api",
+		Namespace: testNamespace,
+		Routes: []nginx.Route{{
+			InboundPort:    "9999",
+			EntryPointPort: "8080",
+			ProxyHost:      "api.apinfra_api",
+			CertIssueType:  certType,
+			CertUpdateSec:  certUpdateSec,
+		}},
 	}
 }
 
@@ -481,7 +487,7 @@ func TestProcessRouting_RendersConfPerRoutingMode(t *testing.T) {
 		{
 			name:          "port_none_plain_http",
 			project:       portProject("none"),
-			confName:      "dev_api.conf",
+			confName:      "dev_api__port-9999.conf",
 			wantInConf:    []string{"listen 9999;", `proxy_pass "http://api.apinfra_api:8080"`},
 			wantNotInConf: []string{"ssl_certificate"},
 			wantInstalled: map[string]string{"port-9999": "none"},
@@ -489,7 +495,7 @@ func TestProcessRouting_RendersConfPerRoutingMode(t *testing.T) {
 		{
 			name:          "port_mock_https",
 			project:       portProject("mock"),
-			confName:      "dev_api.conf",
+			confName:      "dev_api__port-9999.conf",
 			wantInConf:    []string{"listen 9999 ssl;", "/etc/nginx/mockcerts/port-9999/fullchain.pem"},
 			wantInstalled: map[string]string{"port-9999": "mock"},
 			wantACME:      []string{"port-9999:mock"},
@@ -498,7 +504,7 @@ func TestProcessRouting_RendersConfPerRoutingMode(t *testing.T) {
 		{
 			name:     "domain_target_url_https_upstream",
 			project:  domainURLProject("prod", "https://api.example.org"),
-			confName: "dev_edge.conf",
+			confName: "dev_edge__app.example.com.conf",
 			wantInConf: []string{
 				`proxy_pass "https://api.example.org"`,
 				"proxy_ssl_server_name on",
@@ -514,7 +520,7 @@ func TestProcessRouting_RendersConfPerRoutingMode(t *testing.T) {
 		{
 			name:     "domain_target_url_http_upstream",
 			project:  domainURLProject("none", "http://backend.internal:8080"),
-			confName: "dev_edge.conf",
+			confName: "dev_edge__app.example.com.conf",
 			wantInConf: []string{
 				`proxy_pass "http://backend.internal:8080"`,
 				"proxy_set_header Host backend.internal",
@@ -984,8 +990,8 @@ func TestProcessRouting_RemovedProjectIsPruned(t *testing.T) {
 
 	removed := domainProject("mock")
 	removed.Name = "old"
-	removed.DomainName = domainOld
-	removed.ProxyHost = "web.apinfra_old"
+	removed.Routes[0].DomainName = domainOld
+	removed.Routes[0].ProxyHost = "web.apinfra_old"
 
 	kept := portProject("none")
 
@@ -994,7 +1000,8 @@ func TestProcessRouting_RemovedProjectIsPruned(t *testing.T) {
 		t.Fatalf("cycle 1: %v", err)
 	}
 
-	if _, ok := env.conf(t, "dev_old.conf"); !ok || !env.fileExists("mockcerts/old.example.com/fullchain.pem") {
+	oldConf := "dev_old__old.example.com.conf"
+	if _, ok := env.conf(t, oldConf); !ok || !env.fileExists("mockcerts/old.example.com/fullchain.pem") {
 		t.Fatal("cycle 1 must create conf and cert for the soon-removed project")
 	}
 
@@ -1003,7 +1010,7 @@ func TestProcessRouting_RemovedProjectIsPruned(t *testing.T) {
 		t.Fatalf("cycle 2: %v", err)
 	}
 
-	if _, ok := env.conf(t, "dev_old.conf"); ok {
+	if _, ok := env.conf(t, oldConf); ok {
 		t.Fatal("stale conf must be removed")
 	}
 
@@ -1016,7 +1023,7 @@ func TestProcessRouting_RemovedProjectIsPruned(t *testing.T) {
 		t.Fatalf("installed = %v, want only port-9999=none", installed)
 	}
 
-	if _, ok := env.conf(t, "dev_api.conf"); !ok {
+	if _, ok := env.conf(t, "dev_api__port-9999.conf"); !ok {
 		t.Fatal("kept project conf must remain")
 	}
 }
@@ -1229,8 +1236,8 @@ func TestProcessRouting_OneDomainFailureDoesNotAffectOthers(t *testing.T) {
 
 	failing := domainProject("prod")
 	failing.Name = "old"
-	failing.DomainName = domainOld
-	failing.ProxyHost = "web.apinfra_old"
+	failing.Routes[0].DomainName = domainOld
+	failing.Routes[0].ProxyHost = "web.apinfra_old"
 
 	plain := portProject("none")
 
@@ -1246,11 +1253,12 @@ func TestProcessRouting_OneDomainFailureDoesNotAffectOthers(t *testing.T) {
 
 	assertContains(t, healthyConf, sslLiveApp+"/fullchain.pem")
 
-	if _, ok := env.conf(t, "dev_old.conf"); ok {
+	oldConf := "dev_old__old.example.com.conf"
+	if _, ok := env.conf(t, oldConf); ok {
 		t.Fatal("failing domain conf must be rolled back")
 	}
 
-	if _, ok := env.conf(t, "dev_api.conf"); !ok {
+	if _, ok := env.conf(t, "dev_api__port-9999.conf"); !ok {
 		t.Fatal("port project conf must be written")
 	}
 
@@ -1283,7 +1291,7 @@ func TestProcessRouting_OneDomainFailureDoesNotAffectOthers(t *testing.T) {
 	conf, _ := env.conf(t, appConfFile)
 	assertContains(t, conf, sslLiveApp+"/fullchain.pem")
 
-	if _, ok := env.conf(t, "dev_old.conf"); ok {
+	if _, ok := env.conf(t, "dev_old__old.example.com.conf"); ok {
 		t.Fatal("still-failing domain conf must stay absent")
 	}
 
@@ -1312,7 +1320,7 @@ func TestProcessRouting_ReloadPendingRetriesAfterFailure(t *testing.T) {
 	vhostFS := infrastructure.NewVhostFS(env.infra)
 
 	proj := portProject("none")
-	proj.EntryPointPort = "80"
+	proj.Routes[0].EntryPointPort = "80"
 
 	err := env.runLive(proj)
 	if err != nil {
@@ -1324,7 +1332,7 @@ func TestProcessRouting_ReloadPendingRetriesAfterFailure(t *testing.T) {
 		t.Fatalf("after success HasReloadPending = %v, %v", pending, err)
 	}
 
-	proj.EntryPointPort = "8080"
+	proj.Routes[0].EntryPointPort = "8080"
 	env.proxy.failReloadsLeft = 1
 
 	err = env.runLive(proj)
@@ -1337,7 +1345,7 @@ func TestProcessRouting_ReloadPendingRetriesAfterFailure(t *testing.T) {
 		t.Fatalf("after failed reload HasReloadPending = %v, %v", pending, err)
 	}
 
-	conf, ok := env.conf(t, "dev_api.conf")
+	conf, ok := env.conf(t, "dev_api__port-9999.conf")
 	if !ok {
 		t.Fatal("conf missing after failed reload")
 	}
@@ -1413,5 +1421,56 @@ func TestProcessRouting_EnsureHostFilesPendingTriggersReload(t *testing.T) {
 	pending, err = vhostFS.HasReloadPending()
 	if err != nil || pending {
 		t.Fatalf("after reload HasReloadPending = %v, %v", pending, err)
+	}
+}
+
+func TestProcessRouting_MultiRouteProject(t *testing.T) {
+	t.Parallel()
+
+	env := newRouteEnv(t)
+	project := nginx.Project{
+		Name:      "admin",
+		Namespace: testNamespace,
+		Routes: []nginx.Route{
+			{
+				InboundPort:    "3333",
+				EntryPointPort: "8080",
+				ProxyHost:      "console.apinfra_admin",
+				CertIssueType:  "mock",
+				CertUpdateSec:  certUpdateSec,
+			},
+			{
+				DomainName:     "admin.example.com",
+				EntryPointPort: "8080",
+				ProxyHost:      "console.apinfra_admin",
+				CertIssueType:  "prod",
+				CertUpdateSec:  certUpdateSec,
+				CertAcmeEmail:  testEmail,
+			},
+		},
+	}
+
+	err := env.runLive(project)
+	if err != nil {
+		t.Fatalf("ProcessRouting: %v", err)
+	}
+
+	portConf, ok := env.conf(t, "dev_admin__port-3333.conf")
+	if !ok {
+		t.Fatal("port route conf missing")
+	}
+
+	assertContains(t, portConf, "listen 3333 ssl;", "/etc/nginx/mockcerts/port-3333/fullchain.pem")
+
+	domainConf, ok := env.conf(t, "dev_admin__admin.example.com.conf")
+	if !ok {
+		t.Fatal("domain route conf missing")
+	}
+
+	assertContains(t, domainConf, "server_name admin.example.com", "/etc/nginx/ssl/live/admin.example.com/fullchain.pem")
+
+	installed := env.installed(t)
+	if installed["port-3333"] != "mock" || installed["admin.example.com"] != "prod" {
+		t.Fatalf("installed = %v", installed)
 	}
 }

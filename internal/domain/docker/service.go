@@ -198,14 +198,16 @@ func nonemptyStringMap(m map[string]string) map[string]string {
 	return m
 }
 
-func collectProxyHosts(projects []Project) map[string]string {
-	out := make(map[string]string, len(projects))
+func collectProxyHosts(projects []Project) map[string]map[string]string {
+	out := make(map[string]map[string]string, len(projects))
 	for i := range projects {
-		if projects[i].ProxyHost == "" {
+		if len(projects[i].ProxyHosts) == 0 {
 			continue
 		}
 
-		out[projects[i].Name] = projects[i].ProxyHost
+		copied := make(map[string]string, len(projects[i].ProxyHosts))
+		maps.Copy(copied, projects[i].ProxyHosts)
+		out[projects[i].Name] = copied
 	}
 
 	return out
@@ -260,7 +262,7 @@ func (s *Service) applyRunningStacks(
 	enabled []string,
 	stackChanged, applyPending map[string]struct{},
 	desiredServices map[string]map[string]struct{},
-	proxyHosts map[string]string,
+	proxyHosts map[string]map[string]string,
 ) (ApplyResult, error) {
 	result := ApplyResult{
 		Restarted:    false,
@@ -768,7 +770,7 @@ func (s *Service) writeProxyStack(ctx context.Context, projects []Project) (bool
 }
 
 func skipCompose(project Project) bool {
-	return project.TargetURL != "" && strings.TrimSpace(project.ComposeYAML) == ""
+	return strings.TrimSpace(project.ComposeYAML) == "" && len(project.EntryPoints) == 0
 }
 
 func (s *Service) writeAppStack(
@@ -872,8 +874,8 @@ func (s *Service) prepareProjectCompose(
 
 	stripNetworkMode(composeProject, project.Name)
 	ensureProjectNetwork(composeProject, project.Name, s.projectNetworkMTU)
-	resolveProxyHost(project, composeProject)
-	attachProxyTargetNetwork(project, composeProject)
+	resolveProxyHosts(project, composeProject)
+	attachProxyTargetNetworks(project, composeProject)
 	stripContainerNames(composeProject)
 	ensureContainerHardening(composeProject)
 	stripCompositionHooks(composeProject)
@@ -881,46 +883,47 @@ func (s *Service) prepareProjectCompose(
 	return composeProject, sidecar, bindChanged, nil
 }
 
-func resolveProxyHost(project *Project, composeProject *types.Project) {
-	if project.EntryPoint == "" {
+func resolveProxyHosts(project *Project, composeProject *types.Project) {
+	if len(project.EntryPoints) == 0 {
 		return
 	}
 
-	key, ok := resolveServiceKey(composeProject, project.Name, project.EntryPoint)
-	if !ok {
-		log.Printf(
-			"[docker] WARN project=%s: target %q not found in compose (need container_name or YAML service key)",
-			project.Name, project.EntryPoint,
-		)
+	hosts := make(map[string]string, len(project.EntryPoints))
+	for _, entryPoint := range project.EntryPoints {
+		key, ok := resolveServiceKey(composeProject, project.Name, entryPoint)
+		if !ok {
+			log.Printf(
+				"[docker] WARN project=%s: target %q not found in compose (need container_name or YAML service key)",
+				project.Name, entryPoint,
+			)
 
-		return
+			continue
+		}
+
+		hosts[entryPoint] = proxyDNSHost(key, project.Name)
 	}
 
-	project.ProxyHost = proxyDNSHost(key, project.Name)
+	project.ProxyHosts = hosts
 }
 
-func attachProxyTargetNetwork(project *Project, composeProject *types.Project) {
-	if project.EntryPoint == "" {
-		return
-	}
+func attachProxyTargetNetworks(project *Project, composeProject *types.Project) {
+	for _, entryPoint := range project.EntryPoints {
+		if attachProxyNetwork(composeProject, project.Name, entryPoint) {
+			continue
+		}
 
-	if attachProxyNetwork(composeProject, project.Name, project.EntryPoint) {
-		return
+		log.Printf(
+			"[docker] WARN project=%s: cannot attach %s to proxy.target %q",
+			project.Name, proxyNetworkName, entryPoint,
+		)
 	}
-
-	log.Printf(
-		"[docker] WARN project=%s: cannot attach %s to proxy.target %q",
-		project.Name, proxyNetworkName, project.EntryPoint,
-	)
 }
 
 func collectInboundPorts(projects []Project) []string {
 	var ports []string
 
 	for i := range projects {
-		if projects[i].InboundPort != "" {
-			ports = append(ports, projects[i].InboundPort)
-		}
+		ports = append(ports, projects[i].InboundPorts...)
 	}
 
 	return ports
@@ -1101,18 +1104,18 @@ func (s *Service) validateOneProjectCompose(ctx context.Context, project Project
 }
 
 func validateProxyTargetService(project Project, composeProject *types.Project) error {
-	if project.EntryPoint == "" {
-		return nil
+	for _, entryPoint := range project.EntryPoints {
+		if _, ok := resolveServiceKey(composeProject, project.Name, entryPoint); ok {
+			continue
+		}
+
+		return fmt.Errorf(
+			"project=%s: %w %q (need container_name or YAML service key)",
+			project.Name, errProxyTargetMissing, entryPoint,
+		)
 	}
 
-	if _, ok := resolveServiceKey(composeProject, project.Name, project.EntryPoint); ok {
-		return nil
-	}
-
-	return fmt.Errorf(
-		"project=%s: %w %q (need container_name or YAML service key)",
-		project.Name, errProxyTargetMissing, project.EntryPoint,
-	)
+	return nil
 }
 
 func projectComposeRaw(project Project) (string, error) {

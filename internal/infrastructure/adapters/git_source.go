@@ -125,8 +125,16 @@ func (s *GitConfigSource) cloneAndReadSettings(
 	log.Printf("[update] loaded %d project(s)", len(configs))
 
 	for _, project := range configs {
-		log.Printf("[update]   project=%s domain=%s inboundPort=%s entry=%s targetPort=%s targetURL=%s",
-			project.Name, project.DomainName, project.InboundPort, project.EntryPoint, project.EntryPointPort, project.TargetURL)
+		log.Printf("[update]   project=%s routes=%d allowPorts=%v",
+			project.Name, len(project.Routes), project.AllowPortsMapping)
+
+		for i, route := range project.Routes {
+			log.Printf(
+				"[update]     route[%d] domain=%s inboundPort=%s entry=%s targetPort=%s targetURL=%s cert=%s",
+				i, route.DomainName, route.InboundPort, route.EntryPoint, route.EntryPointPort,
+				route.TargetURL, route.CertIssueType,
+			)
+		}
 	}
 
 	return repo, configs, nil
@@ -159,14 +167,7 @@ func projectSpecsFromRepo(
 			Name:              cfg.Name,
 			Namespace:         cfg.Namespace,
 			NamespacePrefix:   cfg.NamespacePrefix,
-			DomainName:        cfg.DomainName,
-			InboundPort:       cfg.InboundPort,
-			EntryPoint:        cfg.EntryPoint,
-			EntryPointPort:    cfg.EntryPointPort,
-			TargetURL:         cfg.TargetURL,
-			CertIssueType:     cfg.CertIssueType,
-			CertUpdateSec:     cfg.CertUpdateSec,
-			CertAcmeEmail:     cfg.CertAcmeEmail,
+			Routes:            toDeploymentRoutes(cfg.Routes),
 			AllowPortsMapping: cfg.AllowPortsMapping,
 			ComposeYAML:       composeYAML,
 			SidecarEnvRaw:     sidecarEnvRaw,
@@ -226,6 +227,28 @@ func readOptionalFile(repo *git.Repo, name string) (string, error) {
 	}
 
 	return string(data), nil
+}
+
+func toDeploymentRoutes(routes []config.Route) []deployment.Route {
+	if len(routes) == 0 {
+		return nil
+	}
+
+	out := make([]deployment.Route, 0, len(routes))
+	for _, route := range routes {
+		out = append(out, deployment.Route{
+			DomainName:     route.DomainName,
+			InboundPort:    route.InboundPort,
+			EntryPoint:     route.EntryPoint,
+			EntryPointPort: route.EntryPointPort,
+			TargetURL:      route.TargetURL,
+			CertIssueType:  route.CertIssueType,
+			CertUpdateSec:  route.CertUpdateSec,
+			CertAcmeEmail:  route.CertAcmeEmail,
+		})
+	}
+
+	return out
 }
 
 func isPlaceholderRepoURL(repoURL string) bool {
