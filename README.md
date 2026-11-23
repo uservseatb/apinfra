@@ -19,13 +19,13 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 * **Webhookless GitOps (Pull Model):** The agent fetches configuration from Git itself, so you do not open inbound management ports, webhooks, or panels — day-to-day management goes through the configuration Git repository; no server login is required for ongoing operations.
 * **Single source of truth in Git:** All settings, routes, and application configs live in one Git repository. That lets you bring up any server in the desired configuration in minutes and gives you the full GitOps toolkit — version history, reviews, rollbacks, and reproducible deploys.
 
-
 ## Key Features
 
 * **GitOps Pull Workflow:** Desired server state lives in the configuration Git repository (`settings.yml` + compose files); the host periodically **pulls** and applies it.
 * **Multiple Compose Files:** Ability to deploy several independent apps from one config repository — each with its own `docker-compose.yml` and optional `.env`.
 * **Automatic SSL:** apinfra issues and renews Let's Encrypt / ZeroSSL (or mock) certificates; modes (`mock` / `prod` / `test` / `none`) are declared per project in `settings.yml`.
 * **Nginx Reverse Proxy:** Per-project inbound rules in `settings.yml` route public domains (HTTPS/HTTP) or host ports (HTTP, or HTTPS with mock self-signed certs) to containers by Docker DNS name and target port.
+* **TLS SNI Passthrough (`stream.sni`):** Share public `:443` between managed HTTPS sites and raw TLS services (such as MQTT or custom TLS backends) routed by SNI without terminating TLS at the proxy.
 * **Port / host-network exposure guard:** By default, all `ports` mappings and any `network_mode: host` in docker-compose are stripped, so containers are not accidentally published on the host network stack; public access goes only through the managed Nginx routes. When needed, you can still configure port forwarding bound to a specific IP (`allow-ports-mapping: true`).
 * **Lightweight & Fast:** Built with Go — minimal overhead, low memory footprint, and fast execution.
 
@@ -104,23 +104,18 @@ volumes:
 Non-sensitive image tags live in Git (`dev/webapp/.env`), while the secrets live on the host (`/home/ap/.env`) prefixed with the uppercase project name and a double underscore (`WEBAPP__`):
 
 ```bash
-# In Git: dev/webapp/.env (supports dot-notation normalization)
-frontend.image.tag=v1.4.2  # Normalized to FRONTEND_IMAGE_TAG
-api.image.tag=v1.4.0       # Normalized to API_IMAGE_TAG
+frontend.image.tag=v1.4.2
+api.image.tag=v1.4.0
 ```
 
 ```bash
-# On host: /home/ap/.env (overrides repo .env, prefix stripped automatically)
-WEBAPP__DB_PASSWORD=super_secret_dev_db_password  # Stripped to DB_PASSWORD for project "webapp"
+WEBAPP__DB_PASSWORD=super_secret_dev_db_password
 ```
 
 ```bash
-# On host: /home/ap/.apinfra
 namespace=dev
-# Git configuration repository
 repo=https://<your_config_repository>
 
-# Private Docker registry (optional)
 containerRegistryHost=https://<your_custom_registry>
 containerRegistryUser=example-user
 containerRegistryToken=ghp_your_custom_registry_token
@@ -158,10 +153,8 @@ To deploy `apinfra`, you need a **clean Linux virtual machine or bare-metal serv
 Connect to your clean Linux server (Ubuntu) via SSH and execute the following commands:
 
 ```bash
-# 1. Download the latest package version
 curl -L -O https://github.com/uservseatb/apinfra/releases/download/v0.5.0/apinfra_0.5.0_amd64.deb
 
-# 2. Update package indexes and install
 sudo apt update
 sudo apt install -y ./apinfra_*.deb
 ```
@@ -173,24 +166,17 @@ sudo apt install -y ./apinfra_*.deb
 #### Building the Package
 
 ```bash
-# Run from the apinfra project folder on your local computer
-# Requires GoReleaser: https://goreleaser.com/install/
 task package
-# equivalent: goreleaser release --snapshot --clean
-
-# Packages land in dist/:
-# → dist/apinfra_<version>_amd64.deb
-# → dist/apinfra_<version>_arm64.deb
 ```
+
+Packages land in `dist/` as `apinfra_<version>_amd64.deb` and `apinfra_<version>_arm64.deb` (requires [GoReleaser](https://goreleaser.com/install/); equivalent: `goreleaser release --snapshot --clean`).
 
 #### Transfer and Install on the Server
 Copy the generated file to your target server (e.g., using `scp`) and install it:
 
 ```bash
-# On your local machine:
 scp dist/apinfra_*.deb user@your-server-ip:/tmp/
 
-# On the remote server:
 sudo apt update
 sudo apt install -y /tmp/apinfra_*.deb
 ```
@@ -299,7 +285,7 @@ projects:
           domain-name: shop.example.com
         target:
           service:
-            name: web                        # matches storefront/docker-compose.yml
+            name: web
             port: 80
         config:
           cert-issue-type: prod
@@ -318,13 +304,13 @@ projects:
     enabled: true
     proxies:
       - inbound:
-          port: 3333                         # Host port Nginx listens on
+          port: 3333
         target:
           service:
             name: console
             port: 8080
         config:
-          cert-issue-type: mock              # self-signed HTTPS on :3333
+          cert-issue-type: mock
       - inbound:
           domain-name: admin.example.com
         target:
@@ -335,25 +321,21 @@ projects:
           cert-issue-type: prod
           cert-acme-email: ops@example.com
     config:
-      # Project-level only (not per-route). Unrelated to Nginx inbound.port —
-      # shown here to illustrate shared project config (Compose host ports).
-      # Cert fields may also be set here as defaults when a route omits its own config.
       allow-ports-mapping: true
 
   - name: edge-api
     enabled: true
-    # singular proxy still works — one route (compatibility)
     proxy:
       inbound:
         domain-name: edge.example.com
       target:
-        url: https://api.example.org         # external origin; XOR with service
+        url: https://api.example.org
     config:
       cert-issue-type: prod
       cert-acme-email: ops@example.com
 
   - name: worker
-    enabled: true                            # No proxies / proxy — compose only
+    enabled: true
     config: {}
 ```
 
@@ -440,27 +422,20 @@ You can inject host-specific environment variables or production secrets directl
 * If the same variable is also defined in the project's `.env` inside the configuration repository, the value from `/home/ap/.env` on the host **overrides** it.
 
 ```yaml
-# config repo: /dev/storefront/docker-compose.yml
 services:
   web:
     image: ghcr.io/example/storefront-web:${IMAGE_TAG}
     environment:
       - DB_PASSWORD=${DB_PASSWORD}
-    # ...
 ```
 
 ```bash
-# config repo: /dev/storefront/.env
 IMAGE_TAG=0.3.7
-# ...
 ```
 
 ```bash
-# server host: /home/ap/.env
 STOREFRONT__DB_PASSWORD=supersecret
-# ...
 ```
-
 
 ### Applying Changes
 
@@ -481,6 +456,11 @@ journalctl --user -u apinfra.service -f
 Drop `-f` to print recent logs without following, or add `-n 200` to limit the output.
 
 ## Architecture & Design
+
+### Managed Nginx Proxy
+
+* **HTTP(S) reverse proxy ([proxies / proxy](#route-block-rules-proxies--singular-proxy)):** Per-project inbound rules in `settings.yml` route public domains (HTTPS/HTTP) or host ports (HTTP, or HTTPS with mock self-signed certs) to containers by Docker DNS name and target port. Certificates are issued and renewed for domain routes. Public `:80` serves ACME HTTP-01 and HTTP→HTTPS redirects.
+* **TLS SNI passthrough ([stream.sni](#streamsni)):** When `stream.sni.enabled` is true, public `:443` is owned by Nginx `stream` with `ssl_preread`. Managed HTTPS domain vhosts keep terminating TLS (and ACME) but listen on the internal address `127.0.0.1:8443` inside the proxy container. SNI matching a `domain-name` is TCP-proxied there. Unmapped SNI follows `stream.sni.default` (`reject` or Compose passthrough). Port `80` stays public for ACME HTTP-01 and redirects. While SNI is enabled, host inbound port `8443` is reserved and rejected in settings.
 
 ### Security Design & Trade-offs (Pragmatic Isolation)
 
@@ -558,7 +538,6 @@ Issuance behavior and ACME CA selection can be configured in the host agent conf
 | `certs.blockHours` | `24` | Hours the domain stays blocked (`blocked_until`) after `triesCount` is exhausted. |
 | `certs.downgradeCertModeHours` | `24` | How long the forced softer mode in `.downgradeCertMode` stays active after an ACME HTTP 429. |
 
-
 ## settings.yml Field Schema
 
 ### Root Level
@@ -576,11 +555,75 @@ Issuance behavior and ACME CA selection can be configured in the host agent conf
 <td><strong>Required.</strong> Schema version string. Currently used: <code>"1.0"</code>.</td>
 </tr>
 <tr>
+<td><code>stream</code></td>
+<td>Optional. Nginx <code>stream</code> settings (see [Stream Level](#stream-level)).</td>
+</tr>
+<tr bgcolor="#f6f8fa">
 <td><code>projects</code></td>
 <td><strong>Required.</strong> Array of projects to be deployed.</td>
 </tr>
 </tbody>
 </table>
+
+### Stream Level
+
+Root `stream` configures Nginx `stream` features. Nested blocks are documented below.
+
+#### `stream.sni`
+
+Enables raw TLS passthrough on public `:443` based on SNI — useful for non-HTTP protocols (like MQTT) or backends that handle their own TLS handshake.
+
+* **When disabled (default):** Domain HTTPS works as usual via standard Nginx `http` vhosts.
+* **When enabled (`enabled: true`):**
+    * **`default` (required):** Set to `reject` to drop unmapped SNI connections, or point to a fallback Compose service (`project` + `service-name` + `port`).
+    * **`routes[]` (optional):** Map specific SNI hostnames directly to Compose services.
+    * **Compose-only projects:** Any project referenced in `default` or `routes[]` is automatically deployed and attached to `apinfra_proxy_net`, even if it defines no HTTP `proxy` / `proxies`.
+
+<table>
+<thead>
+<tr>
+<th align="left">Property</th>
+<th align="left">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr bgcolor="#f6f8fa">
+<td><code>enabled</code></td>
+<td>Optional boolean. Defaults to <code>false</code> when omitted. When <code>true</code>, public <code>:443</code> uses TLS passthrough by SNI.</td>
+</tr>
+<tr>
+<td><code>default</code></td>
+<td>Required when enabled. Scalar <code>reject</code>, or mapping <code>project</code> + <code>service-name</code> + <code>port</code> (enabled project, Compose service, port <code>1..65535</code>).</td>
+</tr>
+<tr bgcolor="#f6f8fa">
+<td><code>routes</code></td>
+<td>Optional sequence. Each entry needs <code>server-name</code> (FQDN) plus the same Compose target fields as <code>default</code>. Must not collide with another route or any <code>proxy.inbound.domain-name</code>.</td>
+</tr>
+</tbody>
+</table>
+
+```yaml
+version: "1.0"
+stream:
+  sni:
+    enabled: true
+    default: reject
+    routes:
+      - server-name: mqtt.example.com
+        project: iot-broker
+        service-name: broker
+        port: 8883
+projects:
+  - name: storefront
+    proxy:
+      inbound:
+        domain-name: shop.example.com
+      target:
+        service:
+          name: web
+          port: 80
+  - name: iot-broker
+```
 
 ### Project Level
 
@@ -776,14 +819,8 @@ When enabled, the agent **tails** `~/.events` after each update cycle (after ima
 Cursor state lives in `~/.events.notify.state.json` (`offset` byte position, `count` of consumed lines). The agent reads **one JSONL line at a time** from `offset`, sends it, and advances the cursor **only after a successful send** (or an intentional skip for filtered lines). First enable anchors the cursor at EOF so historical events are not replayed.
 
 ```properties
-# serverName=dev-1
-# hostPublicIP=203.0.113.10
 notifications.enabled=true
 notifications.targets=telegram://<bot_token>@telegram?chats=<chat_id>&apiurl=https://tg-proxy.example.com ntfy://ntfy.sh/my-alerts
-# notifications.events=all
-# notifications.timeout=10s
-# notifications.maxPerCycle=10
-# notifications.cutEvery=100
 ```
 
 Alert title is `<host>[<namespace>]` (e.g. `dev-1[dev]`), where `<host>` resolves as `serverName` → `hostPublicIP` → OS hostname (`unknown-host` if all empty).
