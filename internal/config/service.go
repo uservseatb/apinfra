@@ -27,20 +27,25 @@ const (
 	defaultCertUpdateSecNone = int64(0)       // unused — no certificates issued
 )
 
+// Route is one Nginx ingress for a project (from proxies[] or singular proxy).
+type Route struct {
+	DomainName     string
+	InboundPort    string
+	EntryPoint     string // proxy.target.service.name from settings
+	EntryPointPort string // proxy.target.service.port
+	TargetURL      string // proxy.target.url (absolute http/https; XOR with service)
+	ProxyHost      string // Docker DNS host for nginx proxy_pass (service.apinfra_project)
+	CertIssueType  string
+	CertUpdateSec  int64
+	CertAcmeEmail  string
+}
+
 // ServiceConfig describes one project from settings.yml (projects[]).
 type ServiceConfig struct {
 	Namespace         string
 	NamespacePrefix   string
 	Name              string
-	DomainName        string
-	InboundPort       string
-	EntryPoint        string // proxy.target.service.name from settings
-	EntryPointPort    string // proxy.target.service.port
-	TargetURL         string // proxy.target.url (absolute http/https; XOR with service)
-	ProxyHost         string // Docker DNS host for nginx proxy_pass (service.apinfra_project)
-	CertIssueType     string
-	CertUpdateSec     int64
-	CertAcmeEmail     string
+	Routes            []Route
 	AllowPortsMapping bool // projects[].config.allow-ports-mapping (default false)
 }
 

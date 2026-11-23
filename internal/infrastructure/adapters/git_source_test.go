@@ -144,7 +144,10 @@ func TestGitConfigSource_LoadWorkspace_AssemblesProjectsAndHostMaps(t *testing.T
 
 	shop, worker := workspace.Projects[0], workspace.Projects[1]
 
-	if shop.Name != "shop" || shop.DomainName != "shop.example.com" || shop.EntryPoint != "web" || shop.EntryPointPort != "8080" {
+	if shop.Name != "shop" || len(shop.Routes) != 1 ||
+		shop.Routes[0].DomainName != "shop.example.com" ||
+		shop.Routes[0].EntryPoint != "web" ||
+		shop.Routes[0].EntryPointPort != "8080" {
 		t.Fatalf("shop spec = %+v", shop)
 	}
 

@@ -32,8 +32,10 @@ func (s *RoutingService) syncNginxServiceConfigs(
 	}
 
 	for _, cfg := range projects {
-		if hasProxyConf(cfg) {
-			keep[serviceConfFileName(cfg)] = struct{}{}
+		for _, route := range cfg.Routes {
+			if hasProxyConf(route) {
+				keep[routeConfFileName(cfg, route)] = struct{}{}
+			}
 		}
 	}
 
@@ -55,30 +57,30 @@ func (s *RoutingService) syncNginxServiceConfigs(
 	return removed || anyConfChanged || defaultChanged, nil
 }
 
-func hasProxyConf(cfg Project) bool {
-	return cfg.DomainName != "" ||
-		(cfg.InboundPort != "" && hasComposeUpstream(cfg))
+func hasProxyConf(route Route) bool {
+	return route.DomainName != "" ||
+		(route.InboundPort != "" && hasComposeUpstream(route))
 }
 
-func hasComposeUpstream(cfg Project) bool {
-	return cfg.ProxyHost != "" && cfg.EntryPointPort != ""
+func hasComposeUpstream(route Route) bool {
+	return route.ProxyHost != "" && route.EntryPointPort != ""
 }
 
-func hasUpstream(cfg Project) bool {
-	return cfg.TargetURL != "" || hasComposeUpstream(cfg)
+func hasUpstream(route Route) bool {
+	return route.TargetURL != "" || hasComposeUpstream(route)
 }
 
-func proxyUpstream(cfg Project) (string, string, string) {
-	if cfg.TargetURL != "" {
-		hostHeader := proxyURLHost(cfg.TargetURL)
-		if strings.HasPrefix(cfg.TargetURL, targetURLSchemeHTTPS+"://") {
-			return cfg.TargetURL, hostHeader, proxySSLServerNameOn
+func proxyUpstream(route Route) (string, string, string) {
+	if route.TargetURL != "" {
+		hostHeader := proxyURLHost(route.TargetURL)
+		if strings.HasPrefix(route.TargetURL, targetURLSchemeHTTPS+"://") {
+			return route.TargetURL, hostHeader, proxySSLServerNameOn
 		}
 
-		return cfg.TargetURL, hostHeader, ""
+		return route.TargetURL, hostHeader, ""
 	}
 
-	return "http://" + net.JoinHostPort(cfg.ProxyHost, cfg.EntryPointPort), proxyHostHeaderClient, ""
+	return "http://" + net.JoinHostPort(route.ProxyHost, route.EntryPointPort), proxyHostHeaderClient, ""
 }
 
 func proxyURLHost(raw string) string {
@@ -90,8 +92,8 @@ func proxyURLHost(raw string) string {
 	return parsed.Hostname()
 }
 
-func applyProxyUpstream(body string, cfg Project) string {
-	pass, hostHeader, sslDirectives := proxyUpstream(cfg)
+func applyProxyUpstream(body string, route Route) string {
+	pass, hostHeader, sslDirectives := proxyUpstream(route)
 	body = strings.ReplaceAll(body, tplPlaceholder("proxyPass"), pass)
 	body = strings.ReplaceAll(body, tplPlaceholder("proxyHostHeader"), hostHeader)
 	body = strings.ReplaceAll(body, tplPlaceholder("proxySSLDirectives"), sslDirectives)
@@ -147,18 +149,22 @@ func (s *RoutingService) writeServiceConfigs(
 	anyChanged := false
 
 	for _, cfg := range projects {
-		content, ok := s.renderServiceConfig(cfg, installedByName, tmpl)
-		if !ok {
-			continue
-		}
+		for _, route := range cfg.Routes {
+			content, ok := s.renderRouteConfig(route, installedByName, tmpl)
+			if !ok {
+				continue
+			}
 
-		changed, writeErr := s.fs.WriteConfig(serviceConfFileName(cfg), content, validate)
-		if writeErr != nil {
-			return anyChanged, fmt.Errorf("write service config %s: %w", cfg.Name, writeErr)
-		}
+			fileName := routeConfFileName(cfg, route)
 
-		if changed {
-			anyChanged = true
+			changed, writeErr := s.fs.WriteConfig(fileName, content, validate)
+			if writeErr != nil {
+				return anyChanged, fmt.Errorf("write service config %s: %w", fileName, writeErr)
+			}
+
+			if changed {
+				anyChanged = true
+			}
 		}
 	}
 
@@ -202,48 +208,48 @@ func loadNginxTemplates() (nginxTemplates, error) {
 	return tmpl, nil
 }
 
-func (s *RoutingService) renderServiceConfig(
-	cfg Project,
+func (s *RoutingService) renderRouteConfig(
+	route Route,
 	installedByName map[string]CertDescriptor,
 	tmpl nginxTemplates,
 ) (string, bool) {
 	switch {
-	case cfg.DomainName != "":
-		return s.renderDomainProxy(cfg, installedByName, tmpl.server, tmpl.ssl, tmpl.httpDomain), true
-	case cfg.InboundPort != "" && hasComposeUpstream(cfg):
-		return s.renderPortProxy(cfg, installedByName, tmpl.httpPort, tmpl.httpsPort), true
+	case route.DomainName != "":
+		return s.renderDomainProxy(route, installedByName, tmpl.server, tmpl.ssl, tmpl.httpDomain), true
+	case route.InboundPort != "" && hasComposeUpstream(route):
+		return s.renderPortProxy(route, installedByName, tmpl.httpPort, tmpl.httpsPort), true
 	default:
 		return "", false
 	}
 }
 
 func (s *RoutingService) renderDomainProxy(
-	cfg Project,
+	route Route,
 	installedByName map[string]CertDescriptor,
 	serverTemplate, sslTemplate, httpDomainTemplate string,
 ) string {
-	mode := confCertMode(cfg, installedByName)
+	mode := confCertMode(route, installedByName)
 	if mode == CertModeNone {
 		body := httpDomainTemplate
-		body = strings.ReplaceAll(body, tplPlaceholder("domain"), cfg.DomainName)
+		body = strings.ReplaceAll(body, tplPlaceholder("domain"), route.DomainName)
 
-		return applyProxyUpstream(body, cfg)
+		return applyProxyUpstream(body, route)
 	}
 
 	var builder strings.Builder
 
-	httpPart := strings.ReplaceAll(serverTemplate, tplPlaceholder("domain"), cfg.DomainName)
+	httpPart := strings.ReplaceAll(serverTemplate, tplPlaceholder("domain"), route.DomainName)
 	builder.WriteString(httpPart)
 
-	name := cfg.DomainName
+	name := route.DomainName
 
 	issued, metaOK := installedByName[name]
-	if metaOK && issued.Mode == mode && s.fs.CertFilesPresent(name, mode) && hasUpstream(cfg) {
+	if metaOK && issued.Mode == mode && s.fs.CertFilesPresent(name, mode) && hasUpstream(route) {
 		block := sslTemplate
-		block = strings.ReplaceAll(block, tplPlaceholder("domain"), cfg.DomainName)
-		block = strings.ReplaceAll(block, tplPlaceholder("domainEscaped"), strings.ReplaceAll(cfg.DomainName, ".", "\\."))
+		block = strings.ReplaceAll(block, tplPlaceholder("domain"), route.DomainName)
+		block = strings.ReplaceAll(block, tplPlaceholder("domainEscaped"), strings.ReplaceAll(route.DomainName, ".", "\\."))
 		block = strings.ReplaceAll(block, tplPlaceholder("certSSLDir"), certNginxSSLDir(name, mode))
-		block = applyProxyUpstream(block, cfg)
+		block = applyProxyUpstream(block, route)
 
 		builder.WriteString("\n\n")
 		builder.WriteString(block)
@@ -253,39 +259,39 @@ func (s *RoutingService) renderDomainProxy(
 }
 
 func (s *RoutingService) renderPortProxy(
-	cfg Project,
+	route Route,
 	installedByName map[string]CertDescriptor,
 	httpPortTemplate, httpsPortTemplate string,
 ) string {
-	mode := confCertMode(cfg, installedByName)
+	mode := confCertMode(route, installedByName)
 
-	name := certIdentity(cfg)
+	name := certIdentity(route)
 	if mode == CertModeMock && name != "" {
 		issued, metaOK := installedByName[name]
 		if metaOK && issued.Mode == CertModeMock && s.fs.CertFilesPresent(name, CertModeMock) {
 			body := httpsPortTemplate
-			body = strings.ReplaceAll(body, tplPlaceholder("inboundPort"), cfg.InboundPort)
+			body = strings.ReplaceAll(body, tplPlaceholder("inboundPort"), route.InboundPort)
 			body = strings.ReplaceAll(body, tplPlaceholder("certSSLDir"), certNginxSSLDir(name, CertModeMock))
 
-			return applyProxyUpstream(body, cfg)
+			return applyProxyUpstream(body, route)
 		}
 	}
 
 	body := httpPortTemplate
-	body = strings.ReplaceAll(body, tplPlaceholder("inboundPort"), cfg.InboundPort)
+	body = strings.ReplaceAll(body, tplPlaceholder("inboundPort"), route.InboundPort)
 
-	return applyProxyUpstream(body, cfg)
+	return applyProxyUpstream(body, route)
 }
 
 // confCertMode is the mode nginx confs are rendered for: settings none always wins;
 // otherwise the installed cert mode (e.g. an acme downgrade) when known, else settings.
-func confCertMode(cfg Project, installedByName map[string]CertDescriptor) string {
-	settings := effectiveCertMode(cfg)
+func confCertMode(route Route, installedByName map[string]CertDescriptor) string {
+	settings := effectiveCertMode(route)
 	if settings == CertModeNone {
 		return settings
 	}
 
-	name := certIdentity(cfg)
+	name := certIdentity(route)
 	if name != "" {
 		if c, ok := installedByName[name]; ok && c.Mode != "" {
 			return c.Mode
@@ -295,11 +301,11 @@ func confCertMode(cfg Project, installedByName map[string]CertDescriptor) string
 	return settings
 }
 
-func effectiveCertMode(cfg Project) string {
+func effectiveCertMode(route Route) string {
 	switch {
-	case cfg.CertIssueType != "":
-		return cfg.CertIssueType
-	case cfg.InboundPort != "" && cfg.DomainName == "":
+	case route.CertIssueType != "":
+		return route.CertIssueType
+	case route.InboundPort != "" && route.DomainName == "":
 		return CertModeNone
 	default:
 		return CertModeMock
@@ -310,37 +316,39 @@ func tplPlaceholder(name string) string {
 	return "$${" + name + "}$$"
 }
 
-// certIdentity is the ~/.certs.json / PEM directory key for a proxy project.
-func certIdentity(cfg Project) string {
+// certIdentity is the ~/.certs.json / PEM directory key for a proxy route.
+func certIdentity(route Route) string {
 	switch {
-	case cfg.DomainName != "":
-		return cfg.DomainName
-	case cfg.InboundPort != "":
-		return "port-" + cfg.InboundPort
+	case route.DomainName != "":
+		return route.DomainName
+	case route.InboundPort != "":
+		return "port-" + route.InboundPort
 	default:
 		return ""
 	}
 }
 
-func serviceConfFileName(cfg Project) string {
-	ns := cfg.Namespace
+func routeConfFileName(project Project, route Route) string {
+	ns := project.Namespace
 	if ns == "" {
 		ns = "default"
 	}
 
-	return fmt.Sprintf("%s_%s.conf", ns, cfg.Name)
+	return fmt.Sprintf("%s_%s__%s.conf", ns, project.Name, certIdentity(route))
 }
 
 func identityToConfFileNames(projects []Project) map[string]string {
-	out := make(map[string]string, len(projects))
+	out := make(map[string]string)
 
 	for _, cfg := range projects {
-		name := certIdentity(cfg)
-		if name == "" {
-			continue
-		}
+		for _, route := range cfg.Routes {
+			name := certIdentity(route)
+			if name == "" {
+				continue
+			}
 
-		out[name] = serviceConfFileName(cfg)
+			out[name] = routeConfFileName(cfg, route)
+		}
 	}
 
 	return out

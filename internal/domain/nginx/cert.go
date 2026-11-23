@@ -94,15 +94,17 @@ func (s *RoutingService) pruneStaleInstalledCerts(
 }
 
 func desiredCertIdentities(projects []Project) map[string]struct{} {
-	desired := make(map[string]struct{}, len(projects))
+	desired := make(map[string]struct{})
 
 	for _, cfg := range projects {
-		name := certIdentity(cfg)
-		if name == "" {
-			continue
-		}
+		for _, route := range cfg.Routes {
+			name := certIdentity(route)
+			if name == "" {
+				continue
+			}
 
-		desired[name] = struct{}{}
+			desired[name] = struct{}{}
+		}
 	}
 
 	return desired
@@ -120,19 +122,21 @@ func (s *RoutingService) issueNeededCerts(
 	var unresolved []string
 
 	for _, cfg := range projects {
-		changed, unresolvedName, err := s.issueOneNeededCert(
-			ctx, cfg, installedByName, confSnaps, publicIP, now,
-		)
-		if err != nil {
-			return certsChanged, unresolved, err
-		}
+		for _, route := range cfg.Routes {
+			changed, unresolvedName, err := s.issueOneNeededCert(
+				ctx, route, installedByName, confSnaps, publicIP, now,
+			)
+			if err != nil {
+				return certsChanged, unresolved, err
+			}
 
-		if changed {
-			certsChanged = true
-		}
+			if changed {
+				certsChanged = true
+			}
 
-		if unresolvedName != "" {
-			unresolved = append(unresolved, unresolvedName)
+			if unresolvedName != "" {
+				unresolved = append(unresolved, unresolvedName)
+			}
 		}
 	}
 
@@ -142,18 +146,18 @@ func (s *RoutingService) issueNeededCerts(
 // issueOneNeededCert returns (certsChanged, unresolvedIdentity).
 func (s *RoutingService) issueOneNeededCert(
 	ctx context.Context,
-	cfg Project,
+	route Route,
 	installedByName map[string]CertDescriptor,
 	confSnaps map[string]ConfigSnapshot,
 	publicIP string,
 	now time.Time,
 ) (bool, string, error) {
-	name := certIdentity(cfg)
-	if name == "" || !wantsCertificate(cfg) {
+	name := certIdentity(route)
+	if name == "" || !wantsCertificate(route) {
 		return false, "", nil
 	}
 
-	requested := effectiveCertMode(cfg)
+	requested := effectiveCertMode(route)
 	if requested == CertModeNone {
 		return false, "", nil
 	}
@@ -164,12 +168,12 @@ func (s *RoutingService) issueOneNeededCert(
 	}
 
 	installed, hasInstalled := installedByName[name]
-	if hasInstalled && !s.certNeedsReissue(installed, mode, cfg.CertUpdateSec, now) {
+	if hasInstalled && !s.certNeedsReissue(installed, mode, route.CertUpdateSec, now) {
 		return false, "", nil
 	}
 
 	if mode == CertModeProd {
-		restored, restoreErr := s.restoreProdFromCache(name, installedByName, cfg.CertUpdateSec, now)
+		restored, restoreErr := s.restoreProdFromCache(name, installedByName, route.CertUpdateSec, now)
 		if restoreErr != nil {
 			return false, "", restoreErr
 		}
@@ -184,13 +188,13 @@ func (s *RoutingService) issueOneNeededCert(
 	}
 
 	return s.issueAndRecordCert(
-		ctx, cfg, name, requested, mode, installed, hasInstalled, installedByName, confSnaps, now,
+		ctx, route, name, requested, mode, installed, hasInstalled, installedByName, confSnaps, now,
 	)
 }
 
 func (s *RoutingService) issueAndRecordCert(
 	ctx context.Context,
-	cfg Project,
+	route Route,
 	name, requested, mode string,
 	installed CertDescriptor,
 	hasInstalled bool,
@@ -201,9 +205,9 @@ func (s *RoutingService) issueAndRecordCert(
 	logCertIssueStart(name, mode, installedByName)
 
 	installedFresh := hasInstalled && installed.Mode != "" &&
-		!s.certNeedsReissue(installed, installed.Mode, cfg.CertUpdateSec, now)
+		!s.certNeedsReissue(installed, installed.Mode, route.CertUpdateSec, now)
 
-	issued, err := s.issueViaIssuer(ctx, cfg, name, requested, mode, installed, hasInstalled)
+	issued, err := s.issueViaIssuer(ctx, route, name, requested, mode, installed, hasInstalled)
 	if err != nil {
 		log.Printf("[nginx] WARN cert issuance failed name=%s mode=%s: %v", name, mode, err)
 
@@ -348,7 +352,7 @@ func (s *RoutingService) applyDowngradeNoneMode(
 // the settings-requested mode so CertificateService can apply / log downgrades.
 func (s *RoutingService) issueViaIssuer(
 	ctx context.Context,
-	cfg Project,
+	route Route,
 	name, requested, effective string,
 	installed CertDescriptor,
 	hasInstalled bool,
@@ -358,7 +362,7 @@ func (s *RoutingService) issueViaIssuer(
 		finish = s.fs.StashCertDir(name, effective)
 	}
 
-	issued, err := s.certs.EnsureCertificate(ctx, name, cfg.CertAcmeEmail, requested, s.timeouts.CertIssue)
+	issued, err := s.certs.EnsureCertificate(ctx, name, route.CertAcmeEmail, requested, s.timeouts.CertIssue)
 	if err != nil {
 		finish(false)
 
@@ -387,13 +391,15 @@ func (s *RoutingService) syncNoneCertModes(
 	changed := false
 
 	for _, cfg := range projects {
-		oneChanged, err := s.syncOneNoneCertMode(cfg, installedByName)
-		if err != nil {
-			return changed, err
-		}
+		for _, route := range cfg.Routes {
+			oneChanged, err := s.syncOneNoneCertMode(route, installedByName)
+			if err != nil {
+				return changed, err
+			}
 
-		if oneChanged {
-			changed = true
+			if oneChanged {
+				changed = true
+			}
 		}
 	}
 
@@ -401,11 +407,11 @@ func (s *RoutingService) syncNoneCertModes(
 }
 
 func (s *RoutingService) syncOneNoneCertMode(
-	cfg Project,
+	route Route,
 	installedByName map[string]CertDescriptor,
 ) (bool, error) {
-	name := certIdentity(cfg)
-	if name == "" || effectiveCertMode(cfg) != CertModeNone {
+	name := certIdentity(route)
+	if name == "" || effectiveCertMode(route) != CertModeNone {
 		return false, nil
 	}
 
@@ -525,8 +531,8 @@ func (s *RoutingService) recordIssuedCert(domain, mode string) error {
 	return nil
 }
 
-func wantsCertificate(cfg Project) bool {
-	mode := effectiveCertMode(cfg)
+func wantsCertificate(route Route) bool {
+	mode := effectiveCertMode(route)
 
-	return mode != CertModeNone && certIdentity(cfg) != ""
+	return mode != CertModeNone && certIdentity(route) != ""
 }

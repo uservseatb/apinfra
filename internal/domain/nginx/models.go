@@ -38,10 +38,8 @@ var (
 	ErrDNSPreflightFailed = errors.New("DNS preflight failed")
 )
 
-// Project is the nginx-domain view of one enabled settings.yml project.
-type Project struct {
-	Name           string
-	Namespace      string
+// Route is one Nginx ingress (domain or port) for a project.
+type Route struct {
 	DomainName     string
 	InboundPort    string
 	EntryPointPort string
@@ -50,6 +48,13 @@ type Project struct {
 	CertIssueType  string
 	CertUpdateSec  int64
 	CertAcmeEmail  string
+}
+
+// Project is the nginx-domain view of one enabled settings.yml project.
+type Project struct {
+	Name      string
+	Namespace string
+	Routes    []Route
 }
 
 // CertDescriptor describes an issued certificate recorded in ~/.certs.json.

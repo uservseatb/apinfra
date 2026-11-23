@@ -7,19 +7,24 @@ import (
 	"github.com/uservseatb/apinfra/internal/domain/nginx"
 )
 
+// Route is one Nginx ingress for a project (from proxies[] or singular proxy).
+type Route struct {
+	DomainName     string
+	InboundPort    string
+	EntryPoint     string
+	EntryPointPort string
+	TargetURL      string
+	CertIssueType  string
+	CertUpdateSec  int64
+	CertAcmeEmail  string
+}
+
 // ProjectSpec is one enabled settings.yml project plus in-memory compose/env content.
 type ProjectSpec struct {
 	Name              string
 	Namespace         string
 	NamespacePrefix   string
-	DomainName        string
-	InboundPort       string
-	EntryPoint        string
-	EntryPointPort    string
-	TargetURL         string
-	CertIssueType     string
-	CertUpdateSec     int64
-	CertAcmeEmail     string
+	Routes            []Route
 	AllowPortsMapping bool
 	ComposeYAML       string
 	SidecarEnvRaw     string

@@ -58,11 +58,14 @@ func toProjects(raw map[string]any, namespace, nsPrefix string) ([]ServiceConfig
 
 	seenNames := make(map[string]string)
 	inboundPorts := make(map[string]string) // inboundPort -> project name
+	domainNames := make(map[string]string)  // domain-name -> project name
 
 	var result []ServiceConfig
 
 	for idx, item := range projList {
-		cfg, skip, parseErr := parseProjectEntry(item, idx, namespace, nsPrefix, seenNames, inboundPorts)
+		cfg, skip, parseErr := parseProjectEntry(
+			item, idx, namespace, nsPrefix, seenNames, inboundPorts, domainNames,
+		)
 		if parseErr != nil {
 			return nil, parseErr
 		}
@@ -109,7 +112,7 @@ func parseProjectEntry(
 	item any,
 	idx int,
 	namespace, nsPrefix string,
-	seenNames, inboundPorts map[string]string,
+	seenNames, inboundPorts, domainNames map[string]string,
 ) (ServiceConfig, bool, error) {
 	mapping, name, err := projectMappingAndName(item, idx, seenNames)
 	if err != nil {
@@ -125,7 +128,7 @@ func parseProjectEntry(
 		return emptyServiceConfig(), true, nil
 	}
 
-	return buildEnabledProject(mapping, name, namespace, nsPrefix, inboundPorts)
+	return buildEnabledProject(mapping, name, namespace, nsPrefix, inboundPorts, domainNames)
 }
 
 func projectMappingAndName(
@@ -165,21 +168,28 @@ func projectMappingAndName(
 func buildEnabledProject(
 	mapping map[string]any,
 	name, namespace, nsPrefix string,
-	inboundPorts map[string]string,
+	inboundPorts, domainNames map[string]string,
 ) (ServiceConfig, bool, error) {
-	domainName, inboundPort, entryPoint, entryPointPort, targetURL, err := parseProxy(mapping, name)
+	projectCertDefaults, err := parseProjectCertDefaults(mapping, name)
 	if err != nil {
 		return emptyServiceConfig(), false, err
 	}
 
-	err = registerInboundPort(inboundPorts, name, inboundPort)
+	routes, err := parseProjectRoutes(mapping, name, projectCertDefaults)
 	if err != nil {
 		return emptyServiceConfig(), false, err
 	}
 
-	certIssueType, certUpdateSec, certAcmeEmail, err := parseProjectCertConfig(mapping, name, domainName, inboundPort)
-	if err != nil {
-		return emptyServiceConfig(), false, err
+	for i := range routes {
+		err = registerInboundPort(inboundPorts, name, routes[i].InboundPort)
+		if err != nil {
+			return emptyServiceConfig(), false, err
+		}
+
+		err = registerDomainName(domainNames, name, routes[i].DomainName)
+		if err != nil {
+			return emptyServiceConfig(), false, err
+		}
 	}
 
 	allowPorts, err := parsePortsMapping(mapping, name)
@@ -191,15 +201,7 @@ func buildEnabledProject(
 		Namespace:         namespace,
 		NamespacePrefix:   nsPrefix,
 		Name:              name,
-		DomainName:        domainName,
-		InboundPort:       inboundPort,
-		EntryPoint:        entryPoint,
-		EntryPointPort:    entryPointPort,
-		TargetURL:         targetURL,
-		ProxyHost:         "",
-		CertIssueType:     certIssueType,
-		CertUpdateSec:     certUpdateSec,
-		CertAcmeEmail:     certAcmeEmail,
+		Routes:            routes,
 		AllowPortsMapping: allowPorts,
 	}, false, nil
 }
@@ -234,46 +236,171 @@ func registerInboundPort(inboundPorts map[string]string, name, inboundPort strin
 	return nil
 }
 
-// parseProjectCertConfig reads projects[].config cert fields.
-// Missing cert-issue-type defaults to mock for domain-name routing and none for inbound.port routing.
-// Domain routing allows mock|prod|test|none; port routing allows only mock|none.
-func parseProjectCertConfig(
-	mapping map[string]any,
-	projectName, domainName, inboundPort string,
-) (string, int64, string, error) {
-	cfg, err := projectConfigMap(mapping, projectName)
-	if err != nil {
-		return "", 0, "", err
+func registerDomainName(domainNames map[string]string, name, domainName string) error {
+	if domainName == "" {
+		return nil
 	}
 
-	portOnly := inboundPort != "" && domainName == ""
+	key := strings.ToLower(domainName)
+	if prev, dup := domainNames[key]; dup {
+		return formatSettingsError(
+			fmt.Sprintf("project %s: proxy.inbound.domain-name %s already used by project %q", name, domainName, prev),
+		)
+	}
+
+	domainNames[key] = name
+
+	return nil
+}
+
+type certFieldDefaults struct {
+	issueTypeSet bool
+	issueType    string
+	updateSecSet bool
+	updateSec    int64
+	acmeEmailSet bool
+	acmeEmail    string
+}
+
+// parseProjectCertDefaults reads optional cert fields from projects[].config (route defaults).
+func parseProjectCertDefaults(mapping map[string]any, projectName string) (certFieldDefaults, error) {
+	cfg, err := projectConfigMap(mapping, projectName)
+	if err != nil {
+		return certFieldDefaults{}, err
+	}
+
+	return parseCertFields(cfg, projectName, "config")
+}
+
+func parseCertFields(cfg map[string]any, projectName, scope string) (certFieldDefaults, error) {
+	var out certFieldDefaults
+
+	if raw, has := cfg["cert-issue-type"]; has && raw != nil {
+		issueType, err := parseCertIssueTypeValue(raw, projectName, scope)
+		if err != nil {
+			return certFieldDefaults{}, err
+		}
+
+		out.issueTypeSet = true
+		out.issueType = issueType
+	}
+
+	if raw, has := cfg["cert-update-time-sec"]; has && raw != nil {
+		sec, err := positiveInt64(raw, fmt.Sprintf("project %s: %s.cert-update-time-sec", projectName, scope))
+		if err != nil {
+			return certFieldDefaults{}, err
+		}
+
+		out.updateSecSet = true
+		out.updateSec = sec
+	}
+
+	if raw, has := cfg["cert-acme-email"]; has && raw != nil {
+		email, isString := raw.(string)
+		if !isString {
+			return certFieldDefaults{}, formatSettingsError(
+				fmt.Sprintf("project %s: %s.cert-acme-email must be a string", projectName, scope),
+			)
+		}
+
+		email = strings.TrimSpace(email)
+
+		err := validateAcmeEmail(email, projectName)
+		if err != nil {
+			return certFieldDefaults{}, err
+		}
+
+		out.acmeEmailSet = true
+		out.acmeEmail = email
+	}
+
+	return out, nil
+}
+
+func parseCertIssueTypeValue(raw any, projectName, scope string) (string, error) {
+	issueType, isString := raw.(string)
+	if !isString {
+		return "", formatSettingsError(
+			fmt.Sprintf("project %s: %s.cert-issue-type must be a string", projectName, scope),
+		)
+	}
+
+	issueType = strings.TrimSpace(issueType)
+	if issueType == "" {
+		return "", formatSettingsError(
+			fmt.Sprintf("project %s: %s.cert-issue-type must be a non-empty string", projectName, scope),
+		)
+	}
+
+	switch issueType {
+	case certIssueMock, certIssueProd, certIssueTest, certIssueNone:
+		return issueType, nil
+	default:
+		return "", formatSettingsError(
+			fmt.Sprintf("project %s: %s.cert-issue-type must be mock, prod, test, or none", projectName, scope),
+		)
+	}
+}
+
+func applyRouteCertConfig(
+	route *Route,
+	routeCfg map[string]any,
+	defaults certFieldDefaults,
+	projectName, label string,
+) error {
+	portOnly := route.InboundPort != "" && route.DomainName == ""
 	issueType := defaultCertIssueType(portOnly)
 
-	issueType, err = resolveCertIssueType(cfg, projectName, issueType)
+	if defaults.issueTypeSet {
+		issueType = defaults.issueType
+	}
+
+	routeFields, err := parseCertFields(routeCfg, projectName, label+".config")
 	if err != nil {
-		return "", 0, "", err
+		return err
+	}
+
+	if routeFields.issueTypeSet {
+		issueType = routeFields.issueType
 	}
 
 	if portOnly && issueType != certIssueMock && issueType != certIssueNone {
-		return "", 0, "", formatSettingsError(
+		return formatSettingsError(
 			fmt.Sprintf(
-				"project %s: config.cert-issue-type for proxy.inbound.port must be mock or none (got %s)",
-				projectName, issueType,
+				"project %s: %s config.cert-issue-type for proxy.inbound.port must be mock or none (got %s)",
+				projectName, label, issueType,
 			),
 		)
 	}
 
-	updateSec, acmeEmail, err := resolveCertExtras(cfg, projectName, issueType)
-	if err != nil {
-		return "", 0, "", err
+	updateSec := defaultCertUpdateSec(issueType)
+	if defaults.updateSecSet {
+		updateSec = defaults.updateSec
 	}
 
-	err = requireCertAcmeEmail(domainName, issueType, acmeEmail, projectName)
-	if err != nil {
-		return "", 0, "", err
+	if routeFields.updateSecSet {
+		updateSec = routeFields.updateSec
 	}
 
-	return issueType, updateSec, acmeEmail, nil
+	acmeEmail := ""
+	if defaults.acmeEmailSet {
+		acmeEmail = defaults.acmeEmail
+	}
+
+	if routeFields.acmeEmailSet {
+		acmeEmail = routeFields.acmeEmail
+	}
+
+	err = requireCertAcmeEmail(route.DomainName, issueType, acmeEmail, projectName)
+	if err != nil {
+		return err
+	}
+
+	route.CertIssueType = issueType
+	route.CertUpdateSec = updateSec
+	route.CertAcmeEmail = acmeEmail
+
+	return nil
 }
 
 func projectConfigMap(mapping map[string]any, projectName string) (map[string]any, error) {
@@ -296,68 +423,6 @@ func defaultCertIssueType(portOnly bool) string {
 	}
 
 	return certIssueMock
-}
-
-func resolveCertIssueType(cfg map[string]any, projectName, fallback string) (string, error) {
-	raw, has := cfg["cert-issue-type"]
-	if !has || raw == nil {
-		return fallback, nil
-	}
-
-	issueType, isString := raw.(string)
-	if !isString {
-		return "", formatSettingsError(
-			fmt.Sprintf("project %s: config.cert-issue-type must be a string", projectName),
-		)
-	}
-
-	issueType = strings.TrimSpace(issueType)
-	if issueType == "" {
-		return "", formatSettingsError(
-			fmt.Sprintf("project %s: config.cert-issue-type must be a non-empty string", projectName),
-		)
-	}
-
-	switch issueType {
-	case certIssueMock, certIssueProd, certIssueTest, certIssueNone:
-		return issueType, nil
-	default:
-		return "", formatSettingsError(
-			fmt.Sprintf("project %s: config.cert-issue-type must be mock, prod, test, or none", projectName),
-		)
-	}
-}
-
-func resolveCertExtras(cfg map[string]any, projectName, issueType string) (int64, string, error) {
-	updateSec := defaultCertUpdateSec(issueType)
-	acmeEmail := ""
-
-	if raw, has := cfg["cert-update-time-sec"]; has && raw != nil {
-		sec, parseErr := positiveInt64(raw, fmt.Sprintf("project %s: config.cert-update-time-sec", projectName))
-		if parseErr != nil {
-			return 0, "", parseErr
-		}
-
-		updateSec = sec
-	}
-
-	if raw, has := cfg["cert-acme-email"]; has && raw != nil {
-		email, isString := raw.(string)
-		if !isString {
-			return 0, "", formatSettingsError(
-				fmt.Sprintf("project %s: config.cert-acme-email must be a string", projectName),
-			)
-		}
-
-		acmeEmail = strings.TrimSpace(email)
-	}
-
-	err := validateAcmeEmail(acmeEmail, projectName)
-	if err != nil {
-		return 0, "", err
-	}
-
-	return updateSec, acmeEmail, nil
 }
 
 func requireCertAcmeEmail(domainName, issueType, acmeEmail, projectName string) error {
@@ -420,53 +485,151 @@ func positiveInt64(val any, label string) (int64, error) {
 	return num, nil
 }
 
-func parseProxy(mapping map[string]any, projectName string) (string, string, string, string, string, error) {
-	pv, hasProxy := mapping["proxy"]
-	if !hasProxy || pv == nil {
-		return "", "", "", "", "", nil
-	}
+func parseProjectRoutes(
+	mapping map[string]any,
+	projectName string,
+	defaults certFieldDefaults,
+) ([]Route, error) {
+	_, hasProxy := mapping["proxy"]
+	proxyPresent := hasProxy && mapping["proxy"] != nil
 
-	proxy, isMap := pv.(map[string]any)
-	if !isMap {
-		return "", "", "", "", "", formatSettingsError(
-			fmt.Sprintf("project %s: proxy must be a mapping", projectName),
+	_, hasProxies := mapping["proxies"]
+	proxiesPresent := hasProxies && mapping["proxies"] != nil
+
+	if proxyPresent && proxiesPresent {
+		return nil, formatSettingsError(
+			fmt.Sprintf("project %s: proxy and proxies are mutually exclusive; prefer proxies", projectName),
 		)
 	}
 
-	domainName, inboundPort, err := parseProxyInbound(proxy, projectName)
-	if err != nil {
-		return "", "", "", "", "", err
+	switch {
+	case proxiesPresent:
+		return parseProxiesList(mapping["proxies"], projectName, defaults)
+	case proxyPresent:
+		route, err := parseOneRoute(mapping["proxy"], projectName, "proxy", defaults)
+		if err != nil {
+			return nil, err
+		}
+
+		return []Route{route}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func parseProxiesList(raw any, projectName string, defaults certFieldDefaults) ([]Route, error) {
+	list, isList := raw.([]any)
+	if !isList {
+		return nil, formatSettingsError(
+			fmt.Sprintf("project %s: proxies must be a sequence", projectName),
+		)
 	}
 
-	entryPoint, entryPointPort, targetURL, err := parseProxyTarget(proxy, projectName)
+	if len(list) == 0 {
+		return nil, formatSettingsError(
+			fmt.Sprintf("project %s: proxies must not be empty", projectName),
+		)
+	}
+
+	routes := make([]Route, 0, len(list))
+	for i, item := range list {
+		label := fmt.Sprintf("proxies[%d]", i)
+
+		route, err := parseOneRoute(item, projectName, label, defaults)
+		if err != nil {
+			return nil, err
+		}
+
+		routes = append(routes, route)
+	}
+
+	return routes, nil
+}
+
+func parseOneRoute(
+	raw any,
+	projectName, label string,
+	defaults certFieldDefaults,
+) (Route, error) {
+	proxy, isMap := raw.(map[string]any)
+	if !isMap || proxy == nil {
+		return Route{}, formatSettingsError(
+			fmt.Sprintf("project %s: %s must be a mapping", projectName, label),
+		)
+	}
+
+	domainName, inboundPort, err := parseProxyInbound(proxy, projectName, label)
 	if err != nil {
-		return "", "", "", "", "", err
+		return Route{}, err
+	}
+
+	entryPoint, entryPointPort, targetURL, err := parseProxyTarget(proxy, projectName, label)
+	if err != nil {
+		return Route{}, err
 	}
 
 	if targetURL != "" && inboundPort != "" {
-		return "", "", "", "", "", formatSettingsError(
+		return Route{}, formatSettingsError(
 			fmt.Sprintf(
-				"project %s: proxy.target.url is only allowed with proxy.inbound.domain-name",
-				projectName,
+				"project %s: %s.target.url is only allowed with %s.inbound.domain-name",
+				projectName, label, label,
 			),
 		)
 	}
 
-	return domainName, inboundPort, entryPoint, entryPointPort, targetURL, nil
+	routeCfg, err := optionalRouteConfigMap(proxy, projectName, label)
+	if err != nil {
+		return Route{}, err
+	}
+
+	route := Route{
+		DomainName:     domainName,
+		InboundPort:    inboundPort,
+		EntryPoint:     entryPoint,
+		EntryPointPort: entryPointPort,
+		TargetURL:      targetURL,
+		ProxyHost:      "",
+		CertIssueType:  "",
+		CertUpdateSec:  0,
+		CertAcmeEmail:  "",
+	}
+
+	err = applyRouteCertConfig(&route, routeCfg, defaults, projectName, label)
+	if err != nil {
+		return Route{}, err
+	}
+
+	return route, nil
 }
 
-func parseProxyInbound(proxy map[string]any, projectName string) (string, string, error) {
+func optionalRouteConfigMap(proxy map[string]any, projectName, label string) (map[string]any, error) {
+	cv, has := proxy["config"]
+	if !has || cv == nil {
+		return map[string]any{}, nil
+	}
+
+	cfg, isMap := cv.(map[string]any)
+	if !isMap {
+		return nil, formatSettingsError(
+			fmt.Sprintf("project %s: %s.config must be a mapping", projectName, label),
+		)
+	}
+
+	return cfg, nil
+}
+
+func parseProxyInbound(proxy map[string]any, projectName, label string) (string, string, error) {
 	inboundRaw, exists := proxy["inbound"]
 	if !exists || inboundRaw == nil {
 		return "", "", formatSettingsError(
-			fmt.Sprintf("project %s: proxy.inbound is required", projectName),
+			fmt.Sprintf("project %s: %s.inbound is required", projectName, label),
 		)
 	}
 
 	inbound, isMap := inboundRaw.(map[string]any)
 	if !isMap {
 		return "", "", formatSettingsError(
-			fmt.Sprintf("project %s: proxy.inbound must be a mapping", projectName),
+			fmt.Sprintf("project %s: %s.inbound must be a mapping", projectName, label),
 		)
 	}
 
@@ -480,13 +643,13 @@ func parseProxyInbound(proxy map[string]any, projectName string) (string, string
 
 	inboundPort, err := optionalInboundPort(
 		inbound["port"],
-		fmt.Sprintf("project %s: proxy.inbound.port", projectName),
+		fmt.Sprintf("project %s: %s.inbound.port", projectName, label),
 	)
 	if err != nil {
 		return "", "", err
 	}
 
-	err = validateInboundExclusive(domainName, inboundPort, projectName)
+	err = validateInboundExclusive(domainName, inboundPort, projectName, label)
 	if err != nil {
 		return "", "", err
 	}
@@ -494,7 +657,7 @@ func parseProxyInbound(proxy map[string]any, projectName string) (string, string
 	return domainName, inboundPort, nil
 }
 
-func validateInboundExclusive(domainName, inboundPort, projectName string) error {
+func validateInboundExclusive(domainName, inboundPort, projectName, label string) error {
 	hasDomain := domainName != ""
 	hasPort := inboundPort != ""
 
@@ -502,31 +665,31 @@ func validateInboundExclusive(domainName, inboundPort, projectName string) error
 	case hasDomain && hasPort:
 		return formatSettingsError(
 			fmt.Sprintf(
-				"project %s: proxy.inbound.domain-name and proxy.inbound.port are mutually exclusive",
-				projectName,
+				"project %s: %s.inbound.domain-name and %s.inbound.port are mutually exclusive",
+				projectName, label, label,
 			),
 		)
 	case !hasDomain && !hasPort:
 		return formatSettingsError(
-			fmt.Sprintf("project %s: proxy.inbound requires domain-name or port", projectName),
+			fmt.Sprintf("project %s: %s.inbound requires domain-name or port", projectName, label),
 		)
 	default:
 		return nil
 	}
 }
 
-func parseProxyTarget(proxy map[string]any, projectName string) (string, string, string, error) {
+func parseProxyTarget(proxy map[string]any, projectName, label string) (string, string, string, error) {
 	targetRaw, exists := proxy["target"]
 	if !exists || targetRaw == nil {
 		return "", "", "", formatSettingsError(
-			fmt.Sprintf("project %s: proxy.target is required", projectName),
+			fmt.Sprintf("project %s: %s.target is required", projectName, label),
 		)
 	}
 
 	target, isMap := targetRaw.(map[string]any)
 	if !isMap {
 		return "", "", "", formatSettingsError(
-			fmt.Sprintf("project %s: proxy.target must be a mapping", projectName),
+			fmt.Sprintf("project %s: %s.target must be a mapping", projectName, label),
 		)
 	}
 
@@ -541,8 +704,8 @@ func parseProxyTarget(proxy map[string]any, projectName string) (string, string,
 	case hasURL && hasService:
 		return "", "", "", formatSettingsError(
 			fmt.Sprintf(
-				"project %s: proxy.target.url and proxy.target.service are mutually exclusive",
-				projectName,
+				"project %s: %s.target.url and %s.target.service are mutually exclusive",
+				projectName, label, label,
 			),
 		)
 	case hasURL:
@@ -553,7 +716,7 @@ func parseProxyTarget(proxy map[string]any, projectName string) (string, string,
 
 		return "", "", normalized, nil
 	case hasService:
-		entryPoint, entryPointPort, err := parseProxyTargetService(serviceRaw, projectName)
+		entryPoint, entryPointPort, err := parseProxyTargetService(serviceRaw, projectName, label)
 		if err != nil {
 			return "", "", "", err
 		}
@@ -562,18 +725,18 @@ func parseProxyTarget(proxy map[string]any, projectName string) (string, string,
 	default:
 		return "", "", "", formatSettingsError(
 			fmt.Sprintf(
-				"project %s: proxy.target requires service or url",
-				projectName,
+				"project %s: %s.target requires service or url",
+				projectName, label,
 			),
 		)
 	}
 }
 
-func parseProxyTargetService(serviceRaw any, projectName string) (string, string, error) {
+func parseProxyTargetService(serviceRaw any, projectName, label string) (string, string, error) {
 	service, isMap := serviceRaw.(map[string]any)
 	if !isMap {
 		return "", "", formatSettingsError(
-			fmt.Sprintf("project %s: proxy.target.service must be a mapping", projectName),
+			fmt.Sprintf("project %s: %s.target.service must be a mapping", projectName, label),
 		)
 	}
 
@@ -587,7 +750,7 @@ func parseProxyTargetService(serviceRaw any, projectName string) (string, string
 
 	entryPointPort, err := parsePortInRange(
 		service["port"],
-		fmt.Sprintf("project %s: proxy.target.service.port", projectName),
+		fmt.Sprintf("project %s: %s.target.service.port", projectName, label),
 		minTargetPort,
 		maxTargetPort,
 	)
@@ -611,15 +774,7 @@ func emptyServiceConfig() ServiceConfig {
 		Namespace:         "",
 		NamespacePrefix:   "",
 		Name:              "",
-		DomainName:        "",
-		InboundPort:       "",
-		EntryPoint:        "",
-		EntryPointPort:    "",
-		TargetURL:         "",
-		ProxyHost:         "",
-		CertIssueType:     "",
-		CertUpdateSec:     0,
-		CertAcmeEmail:     "",
+		Routes:            nil,
 		AllowPortsMapping: false,
 	}
 }

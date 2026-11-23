@@ -55,19 +55,21 @@ func (s *RoutingService) unresolvedCertIdentities(
 	var out []string
 
 	for _, cfg := range projects {
-		name := certIdentity(cfg)
-		if name == "" || !wantsCertificate(cfg) {
-			continue
-		}
+		for _, route := range cfg.Routes {
+			name := certIdentity(route)
+			if name == "" || !wantsCertificate(route) {
+				continue
+			}
 
-		mode := s.resolveIssueMode(name, effectiveCertMode(cfg))
-		if mode == CertModeNone {
-			continue
-		}
+			mode := s.resolveIssueMode(name, effectiveCertMode(route))
+			if mode == CertModeNone {
+				continue
+			}
 
-		c, ok := installedByName[name]
-		if !ok || s.certNeedsReissue(c, mode, cfg.CertUpdateSec, now) {
-			out = append(out, name)
+			c, ok := installedByName[name]
+			if !ok || s.certNeedsReissue(c, mode, route.CertUpdateSec, now) {
+				out = append(out, name)
+			}
 		}
 	}
 
@@ -240,25 +242,27 @@ func (s *RoutingService) logUpToDateCerts(
 	var upToDate []string
 
 	for _, cfg := range projects {
-		if label, ok := s.upToDateCertLabel(cfg, installedByName, now); ok {
-			upToDate = append(upToDate, label)
+		for _, route := range cfg.Routes {
+			if label, ok := s.upToDateCertLabel(route, installedByName, now); ok {
+				upToDate = append(upToDate, label)
+			}
 		}
 	}
 
-	log.Printf("[nginx] up-to-date certs (per-project): %v", upToDate)
+	log.Printf("[nginx] up-to-date certs (per-route): %v", upToDate)
 }
 
 func (s *RoutingService) upToDateCertLabel(
-	cfg Project,
+	route Route,
 	installedByName map[string]CertDescriptor,
 	now time.Time,
 ) (string, bool) {
-	name := certIdentity(cfg)
+	name := certIdentity(route)
 	if name == "" {
 		return "", false
 	}
 
-	mode := s.resolveIssueMode(name, effectiveCertMode(cfg))
+	mode := s.resolveIssueMode(name, effectiveCertMode(route))
 
 	cert, ok := installedByName[name]
 	if !ok {
@@ -273,7 +277,7 @@ func (s *RoutingService) upToDateCertLabel(
 		return "", false
 	}
 
-	if !s.certNeedsReissue(cert, mode, cfg.CertUpdateSec, now) {
+	if !s.certNeedsReissue(cert, mode, route.CertUpdateSec, now) {
 		return name + "(" + cert.Mode + ")", true
 	}
 
