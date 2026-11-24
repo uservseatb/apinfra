@@ -495,6 +495,21 @@ networks:
 			wantAliasFor: "",
 			wantNets:     map[string][]string{"web": {netShop}},
 		},
+		{
+			name: "sni_only_target_joins_proxy_net",
+			compose: `services:
+  broker:
+    image: emqx
+  db:
+    image: postgres
+`,
+			entryPoint:   "broker",
+			wantAliasFor: "broker",
+			wantNets: map[string][]string{
+				"broker": {netProxy, netShop},
+				"db":     {netShop},
+			},
+		},
 	}
 
 	for _, tcase := range tests {

@@ -9,15 +9,16 @@ import (
 // ComposeYAML and SidecarEnvRaw are loaded by the caller (config source);
 // the domain does not read the config repo.
 type Project struct {
-	Name              string
-	NamespacePrefix   string
-	ComposeYAML       string
-	SidecarEnvRaw     string
-	InboundPorts      []string          // union of route inbound.port values
-	EntryPoints       []string          // unique proxy.target.service.name values
-	ProxyHosts        map[string]string // service name → Docker DNS host (filled during prepare)
-	AllowPortsMapping bool              // settings config.allow-ports-mapping; false → strip host ports
-	BindAssets        BindLoad
+	Name                string
+	NamespacePrefix     string
+	ComposeYAML         string
+	SidecarEnvRaw       string
+	InboundPorts        []string          // union of route inbound.port values
+	EntryPoints         []string          // unique proxy / stream service names to attach
+	RequiredEntryPoints []string          // SNI targets that must resolve in compose
+	ProxyHosts          map[string]string // service name → Docker DNS host (filled during prepare)
+	AllowPortsMapping   bool              // settings config.allow-ports-mapping; false → strip host ports
+	BindAssets          BindLoad
 }
 
 func (p Project) envPrefix() string {

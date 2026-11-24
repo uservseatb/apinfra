@@ -31,6 +31,7 @@ var (
 	errEmptyComposeFile        = errors.New("docker-compose.yml is empty")
 	errComposeConfigFailed     = errors.New("compose config invalid")
 	errProxyTargetMissing      = errors.New("proxy.target.service.name not found in compose")
+	errStreamSNIAttachFailed   = errors.New("cannot attach stream.sni target to proxy network")
 	errNilContext              = errors.New("nil context")
 
 	// ErrLoginFailed is returned when registry docker login fails before pull/up.
@@ -874,8 +875,17 @@ func (s *Service) prepareProjectCompose(
 
 	stripNetworkMode(composeProject, project.Name)
 	ensureProjectNetwork(composeProject, project.Name, s.projectNetworkMTU)
-	resolveProxyHosts(project, composeProject)
-	attachProxyTargetNetworks(project, composeProject)
+
+	err = resolveProxyHosts(project, composeProject)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	err = attachProxyTargetNetworks(project, composeProject)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
 	stripContainerNames(composeProject)
 	ensureContainerHardening(composeProject)
 	stripCompositionHooks(composeProject)
@@ -883,15 +893,24 @@ func (s *Service) prepareProjectCompose(
 	return composeProject, sidecar, bindChanged, nil
 }
 
-func resolveProxyHosts(project *Project, composeProject *types.Project) {
+func resolveProxyHosts(project *Project, composeProject *types.Project) error {
 	if len(project.EntryPoints) == 0 {
-		return
+		return nil
 	}
 
+	required := requiredEntryPointSet(project)
 	hosts := make(map[string]string, len(project.EntryPoints))
+
 	for _, entryPoint := range project.EntryPoints {
 		key, ok := resolveServiceKey(composeProject, project.Name, entryPoint)
 		if !ok {
+			if _, need := required[entryPoint]; need {
+				return fmt.Errorf(
+					"project=%s: %w %q (stream.sni target; need container_name or YAML service key)",
+					project.Name, errProxyTargetMissing, entryPoint,
+				)
+			}
+
 			log.Printf(
 				"[docker] WARN project=%s: target %q not found in compose (need container_name or YAML service key)",
 				project.Name, entryPoint,
@@ -904,12 +923,23 @@ func resolveProxyHosts(project *Project, composeProject *types.Project) {
 	}
 
 	project.ProxyHosts = hosts
+
+	return nil
 }
 
-func attachProxyTargetNetworks(project *Project, composeProject *types.Project) {
+func attachProxyTargetNetworks(project *Project, composeProject *types.Project) error {
+	required := requiredEntryPointSet(project)
+
 	for _, entryPoint := range project.EntryPoints {
 		if attachProxyNetwork(composeProject, project.Name, entryPoint) {
 			continue
+		}
+
+		if _, need := required[entryPoint]; need {
+			return fmt.Errorf(
+				"project=%s: %w %q on %s",
+				project.Name, errStreamSNIAttachFailed, entryPoint, proxyNetworkName,
+			)
 		}
 
 		log.Printf(
@@ -917,6 +947,17 @@ func attachProxyTargetNetworks(project *Project, composeProject *types.Project) 
 			project.Name, proxyNetworkName, entryPoint,
 		)
 	}
+
+	return nil
+}
+
+func requiredEntryPointSet(project *Project) map[string]struct{} {
+	out := make(map[string]struct{}, len(project.RequiredEntryPoints))
+	for _, name := range project.RequiredEntryPoints {
+		out[name] = struct{}{}
+	}
+
+	return out
 }
 
 func collectInboundPorts(projects []Project) []string {

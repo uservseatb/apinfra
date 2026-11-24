@@ -1,6 +1,5 @@
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
+$${sslListen}$$
     access_log /var/log/nginx/access.log main_ext;
 
     server_name $${domain}$$;

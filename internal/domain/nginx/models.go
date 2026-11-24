@@ -14,7 +14,15 @@ const (
 )
 
 const (
-	defaultConfName = "_default.conf"
+	defaultConfName     = "_default.conf"
+	StreamSNIFileName   = "sni.conf"
+	StreamSNIIdentity   = "stream.sni"
+	internalHTTPSListen = "127.0.0.1:8443"
+
+	// SSLListenPublic is the public HTTPS listen stanza rendered when stream SNI is off.
+	SSLListenPublic = "    listen 443 ssl;\n    listen [::]:443 ssl;"
+	// SSLListenInternal is the loopback HTTPS listen used when stream SNI owns :443.
+	SSLListenInternal = "    listen " + internalHTTPSListen + " ssl;"
 
 	defaultCertIssueTimeout      = time.Minute
 	defaultNginxCLITimeout       = 30 * time.Second
@@ -36,6 +44,9 @@ var (
 	ErrEmptyDomain = errors.New("empty domain")
 	// ErrDNSPreflightFailed is returned when DNS preflight rejects a domain.
 	ErrDNSPreflightFailed = errors.New("DNS preflight failed")
+	// ErrStreamUpstreamUnresolved is returned when a stream.sni Compose target
+	// has no Docker DNS host after compose prepare.
+	ErrStreamUpstreamUnresolved = errors.New("stream.sni upstream unresolved")
 )
 
 // Route is one Nginx ingress (domain or port) for a project.
@@ -88,9 +99,32 @@ func (t ProcessTimeouts) withDefaults() ProcessTimeouts {
 	return out
 }
 
+// StreamUpstream is a resolved Compose target for stream proxy_pass.
+type StreamUpstream struct {
+	Project string
+	Service string
+	Port    string
+	Host    string // Docker DNS host (service.apinfra_project); empty until resolved
+}
+
+// StreamSNIRoute is one exact SNI → Compose passthrough entry.
+type StreamSNIRoute struct {
+	ServerName string
+	Upstream   StreamUpstream
+}
+
+// StreamSNI is the nginx-domain view of settings.yml stream.sni.
+type StreamSNI struct {
+	Enabled       bool
+	RejectDefault bool
+	Default       StreamUpstream
+	Routes        []StreamSNIRoute
+}
+
 // RoutingParams is the per-cycle input for ProcessRouting.
 type RoutingParams struct {
 	Projects     []Project
+	Stream       StreamSNI
 	ProxyRunning bool
 	ProxyReady   bool
 	ForceReload  bool
@@ -104,9 +138,10 @@ type IssuedCertificate struct {
 	Mode      string
 }
 
-// ConfigSnapshot holds a conf.d file's pre-rewrite bytes for rollback.
+// ConfigSnapshot holds a conf file's pre-rewrite bytes for rollback.
 type ConfigSnapshot struct {
 	FileName string
+	SubDir   string // empty → conf (conf.d); "stream.d" → stream includes
 	Existed  bool
 	Data     []byte
 }

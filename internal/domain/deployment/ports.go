@@ -31,9 +31,32 @@ type ProjectSpec struct {
 	BindAssets        docker.BindLoad
 }
 
+// StreamTarget is a Compose service referenced by stream.sni.default or routes[].
+type StreamTarget struct {
+	Project string
+	Service string
+	Port    string
+}
+
+// StreamSNIRoute is one exact SNI → Compose passthrough entry.
+type StreamSNIRoute struct {
+	StreamTarget
+
+	ServerName string
+}
+
+// StreamSNI is the optional settings.yml stream.sni block for the update cycle.
+type StreamSNI struct {
+	Enabled       bool
+	RejectDefault bool
+	Default       StreamTarget
+	Routes        []StreamSNIRoute
+}
+
 // Workspace is the loaded GitOps configuration for one update cycle.
 type Workspace struct {
 	Projects     []ProjectSpec
+	Stream       StreamSNI
 	HostEnv      map[string]string
 	HostSettings map[string]string
 }

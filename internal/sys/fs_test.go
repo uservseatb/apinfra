@@ -38,6 +38,7 @@ func TestEnsureInfraLayout_CreatesTreeAndEnforcesModes(t *testing.T) {
 		certbot,
 		nginxDir,
 		filepath.Join(infra, "nginx", "conf"),
+		filepath.Join(infra, "nginx", "stream.d"),
 		filepath.Join(infra, "nginx", "leconf"),
 		filepath.Join(infra, "certbot", "conf"),
 		filepath.Join(infra, "certbot", "www"),

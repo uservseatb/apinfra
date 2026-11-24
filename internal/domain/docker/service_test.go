@@ -1078,6 +1078,17 @@ func TestValidateProjects(t *testing.T) {
 			wantErr: "proxy.target.service.name not found",
 		},
 		{
+			name: "required_sni_entry_point_not_in_compose",
+			project: func() docker.Project {
+				p := shopProject(baseCompose)
+				p.EntryPoints = []string{"broker"}
+				p.RequiredEntryPoints = []string{"broker"}
+
+				return p
+			}(),
+			wantErr: "proxy.target.service.name not found",
+		},
+		{
 			name: "entry_point_by_container_name",
 			project: func() docker.Project {
 				p := shopProject("services:\n  web:\n    image: nginx\n    container_name: shop-web\n")

@@ -79,6 +79,7 @@ func (s *RoutingService) unresolvedCertIdentities(
 func (s *RoutingService) finishNginxWithoutCerts(
 	ctx context.Context,
 	projects []Project,
+	stream StreamSNI,
 	validate func() error,
 	confSnaps map[string]ConfigSnapshot,
 	installedByName map[string]CertDescriptor,
@@ -91,7 +92,13 @@ func (s *RoutingService) finishNginxWithoutCerts(
 	unresolved := s.unresolvedCertIdentities(projects, installedByName, now)
 
 	if len(unresolved) > 0 {
-		restored := s.fs.RestoreConfigSnapshots(confSnaps, unresolved)
+		restored, restoreErr := s.rollbackUnresolvedConfs(
+			projects, stream, validate, confSnaps, unresolved,
+		)
+		if restoreErr != nil {
+			return restoreErr
+		}
+
 		log.Printf(
 			"[nginx] cert unresolved (proxy not ready) for %s; rolled back those service confs",
 			strings.Join(unresolved, ", "),
@@ -107,7 +114,9 @@ func (s *RoutingService) finishNginxWithoutCerts(
 
 	certsChanged = pruned || certsChanged
 
-	anyConfChanged, err = s.rewriteConfigsIfCertsChanged(projects, validate, anyConfChanged, certsChanged)
+	anyConfChanged, err = s.rewriteConfigsIfCertsChanged(
+		projects, stream, validate, anyConfChanged, certsChanged,
+	)
 	if err != nil {
 		return err
 	}
@@ -124,6 +133,7 @@ func (s *RoutingService) finishNginxWithoutCerts(
 func (s *RoutingService) finishNginxWithCerts(
 	ctx context.Context,
 	projects []Project,
+	stream StreamSNI,
 	validate func() error,
 	installedByName map[string]CertDescriptor,
 	confSnaps map[string]ConfigSnapshot,
@@ -144,12 +154,20 @@ func (s *RoutingService) finishNginxWithCerts(
 
 	if len(unresolvedNames) > 0 {
 		// Domains issued in this cycle get their HTTPS block now; only unresolved ones are rolled back.
-		anyConfChanged, err = s.rewriteConfigsIfCertsChanged(projects, validate, anyConfChanged, certsChanged)
+		anyConfChanged, err = s.rewriteConfigsIfCertsChanged(
+			projects, stream, validate, anyConfChanged, certsChanged,
+		)
 		if err != nil {
 			return err
 		}
 
-		restored := s.fs.RestoreConfigSnapshots(confSnaps, unresolvedNames)
+		restored, restoreErr := s.rollbackUnresolvedConfs(
+			projects, stream, validate, confSnaps, unresolvedNames,
+		)
+		if restoreErr != nil {
+			return restoreErr
+		}
+
 		log.Printf(
 			"[nginx] cert unresolved for %s; rolled back those service confs",
 			strings.Join(unresolvedNames, ", "),
@@ -165,12 +183,59 @@ func (s *RoutingService) finishNginxWithCerts(
 
 	certsChanged = pruned || certsChanged
 
-	anyConfChanged, err = s.rewriteConfigsIfCertsChanged(projects, validate, anyConfChanged, certsChanged)
+	anyConfChanged, err = s.rewriteConfigsIfCertsChanged(
+		projects, stream, validate, anyConfChanged, certsChanged,
+	)
 	if err != nil {
 		return err
 	}
 
 	return s.reloadNginxIfNeeded(ctx, isMainUpdated, anyConfChanged, certsChanged, forceReload)
+}
+
+// rollbackUnresolvedConfs restores pre-cycle snapshots for failed cert domains.
+// When stream SNI owns public :443, restored HTTPS blocks keep their cert material
+// and only the listen lines are rewritten to the internal HTTPS port.
+func (s *RoutingService) rollbackUnresolvedConfs(
+	projects []Project,
+	stream StreamSNI,
+	validate func() error,
+	confSnaps map[string]ConfigSnapshot,
+	unresolved []string,
+) (bool, error) {
+	restored := s.fs.RestoreConfigSnapshots(confSnaps, unresolved)
+	if !stream.Enabled {
+		return restored, nil
+	}
+
+	// issueAndRecordCert may already have restored the snapshot on failure, so
+	// restored can be false here even though the file still has public :443 listen.
+	identityFiles := identityToConfFileNames(projects)
+	fileNames := make([]string, 0, len(unresolved))
+
+	for _, name := range unresolved {
+		if name == StreamSNIIdentity {
+			continue
+		}
+
+		fileName, ok := identityFiles[name]
+		if !ok {
+			continue
+		}
+
+		fileNames = append(fileNames, fileName)
+	}
+
+	if len(fileNames) == 0 {
+		return restored, nil
+	}
+
+	rewritten, err := s.fs.RewritePublicSSLListenToInternal(fileNames, validate)
+	if err != nil {
+		return restored, fmt.Errorf("rewrite ssl listen for stream sni: %w", err)
+	}
+
+	return restored || rewritten, nil
 }
 
 func (s *RoutingService) reloadNginxIfNeeded(

@@ -13,9 +13,12 @@ type IngressFileSystem interface {
 	UpdateMainNginxConfig() (changed bool, err error)
 	PrepareConfDir() error
 	WriteConfig(fileName, content string, validate func() error) (changed bool, err error)
+	WriteStreamConfig(fileName, content string, validate func() error) (changed bool, err error)
+	RemoveStreamConfig(fileName string, validate func() error) (removed bool, err error)
 	RemoveStaleConfigs(keepFileNames map[string]struct{}, validate func() error) (removed bool, err error)
 	SnapshotConfigs(identityToFileName map[string]string) map[string]ConfigSnapshot
 	RestoreConfigSnapshots(snapshots map[string]ConfigSnapshot, identities []string) (restored bool)
+	RewritePublicSSLListenToInternal(fileNames []string, validate func() error) (changed bool, err error)
 	MarkReloadPending() error
 	HasReloadPending() (bool, error)
 	ClearReloadPending() error

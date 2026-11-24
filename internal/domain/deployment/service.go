@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 
 	"github.com/uservseatb/apinfra/internal/domain/docker"
 	"github.com/uservseatb/apinfra/internal/domain/nginx"
@@ -53,7 +54,7 @@ func (s *GitOpsDeploymentService) ExecuteUpdateCycle(ctx context.Context) error 
 		return fmt.Errorf("load workspace: %w", err)
 	}
 
-	dockerProjects := toDockerProjects(workspace.Projects)
+	dockerProjects := toDockerProjects(workspace.Projects, workspace.Stream)
 
 	err = s.docker.ValidateConfigDirEnv(dockerProjects, workspace.HostEnv)
 	if err != nil {
@@ -93,7 +94,9 @@ func (s *GitOpsDeploymentService) ExecuteUpdateCycle(ctx context.Context) error 
 		log.Printf("[update] docker processor: done restarted=%v", applyResult.Restarted)
 	}
 
-	errs = append(errs, s.applyNginxAndPrune(ctx, workspace.Projects, nginxReady, applyResult, dockerErr))
+	errs = append(errs, s.applyNginxAndPrune(
+		ctx, workspace.Projects, workspace.Stream, nginxReady, applyResult, dockerErr,
+	))
 
 	log.Printf("[update] completed namespace=%s", s.namespace)
 
@@ -103,6 +106,7 @@ func (s *GitOpsDeploymentService) ExecuteUpdateCycle(ctx context.Context) error 
 func (s *GitOpsDeploymentService) applyNginxAndPrune(
 	ctx context.Context,
 	specs []ProjectSpec,
+	stream StreamSNI,
 	nginxReady bool,
 	applyResult docker.ApplyResult,
 	dockerErr error,
@@ -140,6 +144,7 @@ func (s *GitOpsDeploymentService) applyNginxAndPrune(
 
 	err := s.ingress.ProcessRouting(ctx, nginx.RoutingParams{
 		Projects:     toNginxProjects(specs, applyResult.ProxyHosts),
+		Stream:       toNginxStream(stream, applyResult.ProxyHosts),
 		ProxyRunning: applyResult.ProxyRunning,
 		ProxyReady:   applyResult.ProxyReady,
 		ForceReload:  applyResult.Restarted,
@@ -169,20 +174,80 @@ func (s *GitOpsDeploymentService) applyNginxAndPrune(
 	return errors.Join(errs...)
 }
 
-func toDockerProjects(specs []ProjectSpec) []docker.Project {
+func toDockerProjects(specs []ProjectSpec, stream StreamSNI) []docker.Project {
+	sniByProject := collectStreamEntryPoints(stream)
+
 	out := make([]docker.Project, 0, len(specs))
 	for _, spec := range specs {
+		httpEntries := collectSpecEntryPoints(spec.Routes)
+		required := sniByProject[spec.Name]
+		entries := mergeUniqueStrings(httpEntries, required)
+
 		out = append(out, docker.Project{
-			Name:              spec.Name,
-			NamespacePrefix:   spec.NamespacePrefix,
-			ComposeYAML:       spec.ComposeYAML,
-			SidecarEnvRaw:     spec.SidecarEnvRaw,
-			InboundPorts:      collectSpecInboundPorts(spec.Routes),
-			EntryPoints:       collectSpecEntryPoints(spec.Routes),
-			ProxyHosts:        nil,
-			AllowPortsMapping: spec.AllowPortsMapping,
-			BindAssets:        spec.BindAssets,
+			Name:                spec.Name,
+			NamespacePrefix:     spec.NamespacePrefix,
+			ComposeYAML:         spec.ComposeYAML,
+			SidecarEnvRaw:       spec.SidecarEnvRaw,
+			InboundPorts:        collectSpecInboundPorts(spec.Routes),
+			EntryPoints:         entries,
+			RequiredEntryPoints: required,
+			ProxyHosts:          nil,
+			AllowPortsMapping:   spec.AllowPortsMapping,
+			BindAssets:          spec.BindAssets,
 		})
+	}
+
+	return out
+}
+
+func collectStreamEntryPoints(stream StreamSNI) map[string][]string {
+	out := map[string][]string{}
+	if !stream.Enabled {
+		return out
+	}
+
+	add := func(target StreamTarget) {
+		if target.Project == "" || target.Service == "" {
+			return
+		}
+
+		list := out[target.Project]
+		if slices.Contains(list, target.Service) {
+			return
+		}
+
+		out[target.Project] = append(list, target.Service)
+	}
+
+	if !stream.RejectDefault {
+		add(stream.Default)
+	}
+
+	for _, route := range stream.Routes {
+		add(route.StreamTarget)
+	}
+
+	return out
+}
+
+func mergeUniqueStrings(parts ...[]string) []string {
+	seen := map[string]struct{}{}
+
+	var out []string
+
+	for _, part := range parts {
+		for _, value := range part {
+			if value == "" {
+				continue
+			}
+
+			if _, ok := seen[value]; ok {
+				continue
+			}
+
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
 	}
 
 	return out
@@ -251,4 +316,39 @@ func toNginxProjects(specs []ProjectSpec, proxyHosts map[string]map[string]strin
 	}
 
 	return out
+}
+
+func toNginxStream(stream StreamSNI, proxyHosts map[string]map[string]string) nginx.StreamSNI {
+	resolve := func(target StreamTarget) nginx.StreamUpstream {
+		host := ""
+		if proxyHosts != nil && target.Project != "" && target.Service != "" {
+			host = proxyHosts[target.Project][target.Service]
+		}
+
+		return nginx.StreamUpstream{
+			Project: target.Project,
+			Service: target.Service,
+			Port:    target.Port,
+			Host:    host,
+		}
+	}
+
+	routes := make([]nginx.StreamSNIRoute, 0, len(stream.Routes))
+	for _, route := range stream.Routes {
+		routes = append(routes, nginx.StreamSNIRoute{
+			ServerName: route.ServerName,
+			Upstream:   resolve(route.StreamTarget),
+		})
+	}
+
+	if len(routes) == 0 {
+		routes = nil
+	}
+
+	return nginx.StreamSNI{
+		Enabled:       stream.Enabled,
+		RejectDefault: stream.RejectDefault,
+		Default:       resolve(stream.Default),
+		Routes:        routes,
+	}
 }

@@ -8,6 +8,7 @@ services:
       - "443:443"
     volumes:
       - ./nginx/conf/:/etc/nginx/conf.d/:ro
+      - ./nginx/stream.d/:/etc/nginx/stream.d/:ro
       - ./certbot/conf/:/etc/nginx/ssl/:ro
       - ./mockcerts/:/etc/nginx/mockcerts/:ro
       - ./nginx/leconf/:/etc/nginx/le/:ro

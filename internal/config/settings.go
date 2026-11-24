@@ -12,48 +12,53 @@ import (
 
 var errNilRepo = errors.New("nil repo")
 
+const (
+	streamSNIRejectKeyword = "reject"
+	streamSNIInternalPort  = "8443"
+)
+
 // ReadSettings reads and validates settings.yml from the config repo for the given namespace.
 // Path is <namespace>/settings.yml (no "namespace/" prefix). Disabled projects are omitted.
-func ReadSettings(repo fileReader, namespace string) ([]ServiceConfig, error) {
+func ReadSettings(repo fileReader, namespace string) (Settings, error) {
 	if repo == nil {
-		return nil, errNilRepo
+		return Settings{}, errNilRepo
 	}
 
 	nsPrefix := namespace
 	if !repo.Exists(nsPrefix) {
-		return nil, formatSettingsError(fmt.Sprintf("environment folder %q not found", namespace))
+		return Settings{}, formatSettingsError(fmt.Sprintf("environment folder %q not found", namespace))
 	}
 
 	settingsPath := path.Join(nsPrefix, "settings.yml")
 
 	data, err := repo.ReadFile(settingsPath)
 	if err != nil {
-		return nil, formatSettingsError(fmt.Sprintf("read settings.yml for %s: %s", namespace, err))
+		return Settings{}, formatSettingsError(fmt.Sprintf("read settings.yml for %s: %s", namespace, err))
 	}
 
 	var raw map[string]any
 
 	err = yaml.Unmarshal(data, &raw)
 	if err != nil {
-		return nil, formatSettingsError(fmt.Sprintf("parse YAML: %s", err))
+		return Settings{}, formatSettingsError(fmt.Sprintf("parse YAML: %s", err))
 	}
 
-	return toProjects(raw, namespace, nsPrefix)
+	return toSettings(raw, namespace, nsPrefix)
 }
 
-func toProjects(raw map[string]any, namespace, nsPrefix string) ([]ServiceConfig, error) {
+func toSettings(raw map[string]any, namespace, nsPrefix string) (Settings, error) {
 	if raw == nil {
-		return nil, formatSettingsError("empty document")
+		return Settings{}, formatSettingsError("empty document")
 	}
 
 	err := requireSettingsVersion(raw)
 	if err != nil {
-		return nil, err
+		return Settings{}, err
 	}
 
 	projList, err := requireProjectsList(raw)
 	if err != nil {
-		return nil, err
+		return Settings{}, err
 	}
 
 	seenNames := make(map[string]string)
@@ -67,7 +72,7 @@ func toProjects(raw map[string]any, namespace, nsPrefix string) ([]ServiceConfig
 			item, idx, namespace, nsPrefix, seenNames, inboundPorts, domainNames,
 		)
 		if parseErr != nil {
-			return nil, parseErr
+			return Settings{}, parseErr
 		}
 
 		if skip {
@@ -77,7 +82,12 @@ func toProjects(raw map[string]any, namespace, nsPrefix string) ([]ServiceConfig
 		result = append(result, cfg)
 	}
 
-	return result, nil
+	stream, err := parseStreamSNI(raw, result, inboundPorts, domainNames)
+	if err != nil {
+		return Settings{}, err
+	}
+
+	return Settings{Projects: result, Stream: stream}, nil
 }
 
 func requireSettingsVersion(raw map[string]any) error {
@@ -767,6 +777,291 @@ func optionalInboundPort(val any, label string) (string, error) {
 	}
 
 	return parsePortInRange(val, label, minInboundPort, maxInboundPort)
+}
+
+func parseStreamSNI(
+	raw map[string]any,
+	projects []ServiceConfig,
+	inboundPorts, domainNames map[string]string,
+) (StreamSNI, error) {
+	sniMap, present, err := streamSNIMapping(raw)
+	if err != nil || !present {
+		return emptyStreamSNI(), err
+	}
+
+	enabled, err := parseStreamSNIEnabled(sniMap)
+	if err != nil {
+		return emptyStreamSNI(), err
+	}
+
+	rejectDefault, defaultTarget, hasDefault, err := parseStreamSNIDefault(sniMap)
+	if err != nil {
+		return emptyStreamSNI(), err
+	}
+
+	if enabled && !hasDefault {
+		return emptyStreamSNI(), formatSettingsError("stream.sni.default is required when stream.sni.enabled is true")
+	}
+
+	enabledProjects := enabledProjectNames(projects)
+
+	if hasDefault && !rejectDefault {
+		err = validateStreamTargetProject(defaultTarget, enabledProjects, "stream.sni.default")
+		if err != nil {
+			return emptyStreamSNI(), err
+		}
+	}
+
+	routes, err := parseStreamSNIRoutes(sniMap, enabledProjects, domainNames)
+	if err != nil {
+		return emptyStreamSNI(), err
+	}
+
+	err = validateStreamSNIInternalPort(enabled, inboundPorts)
+	if err != nil {
+		return emptyStreamSNI(), err
+	}
+
+	return StreamSNI{
+		Enabled:       enabled,
+		RejectDefault: rejectDefault,
+		Default:       defaultTarget,
+		Routes:        routes,
+	}, nil
+}
+
+func streamSNIMapping(raw map[string]any) (map[string]any, bool, error) {
+	streamRaw, hasStream := raw["stream"]
+	if !hasStream || streamRaw == nil {
+		return nil, false, nil
+	}
+
+	streamMap, isMap := streamRaw.(map[string]any)
+	if !isMap {
+		return nil, false, formatSettingsError("stream must be a mapping")
+	}
+
+	sniRaw, hasSNI := streamMap["sni"]
+	if !hasSNI || sniRaw == nil {
+		return nil, false, nil
+	}
+
+	sniMap, isMap := sniRaw.(map[string]any)
+	if !isMap {
+		return nil, false, formatSettingsError("stream.sni must be a mapping")
+	}
+
+	return sniMap, true, nil
+}
+
+func enabledProjectNames(projects []ServiceConfig) map[string]string {
+	out := make(map[string]string, len(projects))
+	for _, project := range projects {
+		out[strings.ToUpper(project.Name)] = project.Name
+	}
+
+	return out
+}
+
+func validateStreamSNIInternalPort(enabled bool, inboundPorts map[string]string) error {
+	if !enabled {
+		return nil
+	}
+
+	prev, used := inboundPorts[streamSNIInternalPort]
+	if !used {
+		return nil
+	}
+
+	return formatSettingsError(
+		fmt.Sprintf(
+			"stream.sni.enabled: proxy.inbound.port %s is reserved for the internal HTTPS listener (used by project %q)",
+			streamSNIInternalPort, prev,
+		),
+	)
+}
+
+func emptyStreamSNI() StreamSNI {
+	return StreamSNI{
+		Enabled:       false,
+		RejectDefault: false,
+		Default:       emptyStreamTarget(),
+		Routes:        nil,
+	}
+}
+
+func emptyStreamTarget() StreamTarget {
+	return StreamTarget{Project: "", Service: "", Port: ""}
+}
+
+func parseStreamSNIEnabled(sniMap map[string]any) (bool, error) {
+	raw, has := sniMap["enabled"]
+	if !has || raw == nil {
+		return false, nil
+	}
+
+	enabled, isBool := raw.(bool)
+	if !isBool {
+		return false, formatSettingsError("stream.sni.enabled must be a boolean")
+	}
+
+	return enabled, nil
+}
+
+func parseStreamSNIDefault(sniMap map[string]any) (bool, StreamTarget, bool, error) {
+	raw, has := sniMap["default"]
+	if !has || raw == nil {
+		return false, emptyStreamTarget(), false, nil
+	}
+
+	switch typed := raw.(type) {
+	case string:
+		keyword := strings.TrimSpace(typed)
+		if keyword != streamSNIRejectKeyword {
+			return false, emptyStreamTarget(), false, formatSettingsError(
+				fmt.Sprintf(
+					"stream.sni.default scalar must be %q (got %q)",
+					streamSNIRejectKeyword, keyword,
+				),
+			)
+		}
+
+		return true, emptyStreamTarget(), true, nil
+	case map[string]any:
+		target, err := parseStreamTarget(typed, "stream.sni.default")
+		if err != nil {
+			return false, emptyStreamTarget(), false, err
+		}
+
+		return false, target, true, nil
+	default:
+		return false, emptyStreamTarget(), false, formatSettingsError(
+			"stream.sni.default must be reject or a mapping with project, service-name, and port",
+		)
+	}
+}
+
+func parseStreamSNIRoutes(
+	sniMap map[string]any,
+	enabledProjects, domainNames map[string]string,
+) ([]StreamSNIRoute, error) {
+	raw, has := sniMap["routes"]
+	if !has || raw == nil {
+		return nil, nil
+	}
+
+	list, isList := raw.([]any)
+	if !isList {
+		return nil, formatSettingsError("stream.sni.routes must be a sequence")
+	}
+
+	seenServerNames := make(map[string]struct{}, len(list))
+	routes := make([]StreamSNIRoute, 0, len(list))
+
+	for idx, item := range list {
+		label := fmt.Sprintf("stream.sni.routes[%d]", idx)
+
+		mapping, isMap := item.(map[string]any)
+		if !isMap || mapping == nil {
+			return nil, formatSettingsError(label + " must be a mapping")
+		}
+
+		serverName, _ := mapping["server-name"].(string)
+		serverName = strings.TrimSpace(serverName)
+
+		err := validateHostname(serverName, label+".server-name", false)
+		if err != nil {
+			return nil, err
+		}
+
+		key := strings.ToLower(serverName)
+		if _, dup := seenServerNames[key]; dup {
+			return nil, formatSettingsError(
+				fmt.Sprintf("%s.server-name %q is duplicated", label, serverName),
+			)
+		}
+
+		if prev, conflict := domainNames[key]; conflict {
+			return nil, formatSettingsError(
+				fmt.Sprintf(
+					"%s.server-name %q conflicts with proxy.inbound.domain-name on project %q",
+					label, serverName, prev,
+				),
+			)
+		}
+
+		seenServerNames[key] = struct{}{}
+
+		target, err := parseStreamTarget(mapping, label)
+		if err != nil {
+			return nil, err
+		}
+
+		err = validateStreamTargetProject(target, enabledProjects, label)
+		if err != nil {
+			return nil, err
+		}
+
+		routes = append(routes, StreamSNIRoute{
+			Project:    target.Project,
+			Service:    target.Service,
+			Port:       target.Port,
+			ServerName: serverName,
+		})
+	}
+
+	return routes, nil
+}
+
+func parseStreamTarget(mapping map[string]any, label string) (StreamTarget, error) {
+	project, _ := mapping["project"].(string)
+	project = strings.TrimSpace(project)
+
+	if project == "" {
+		return emptyStreamTarget(), formatSettingsError(label + ".project is required")
+	}
+
+	err := validateProjectName(project)
+	if err != nil {
+		return emptyStreamTarget(), formatSettingsError(
+			fmt.Sprintf("%s.project %q must match [A-Za-z0-9][A-Za-z0-9_-]*", label, project),
+		)
+	}
+
+	service, _ := mapping["service-name"].(string)
+	service = strings.TrimSpace(service)
+
+	if service == "" {
+		return emptyStreamTarget(), formatSettingsError(label + ".service-name is required")
+	}
+
+	if !serviceNamePattern.MatchString(service) {
+		return emptyStreamTarget(), formatSettingsError(
+			label + ".service-name must match [A-Za-z0-9][A-Za-z0-9_.-]* (compose service key or container_name)",
+		)
+	}
+
+	port, err := parsePortInRange(
+		mapping["port"],
+		label+".port",
+		minTargetPort,
+		maxTargetPort,
+	)
+	if err != nil {
+		return emptyStreamTarget(), err
+	}
+
+	return StreamTarget{Project: project, Service: service, Port: port}, nil
+}
+
+func validateStreamTargetProject(target StreamTarget, enabledProjects map[string]string, label string) error {
+	if _, ok := enabledProjects[strings.ToUpper(target.Project)]; ok {
+		return nil
+	}
+
+	return formatSettingsError(
+		fmt.Sprintf("%s.project %q is not an enabled project", label, target.Project),
+	)
 }
 
 func emptyServiceConfig() ServiceConfig {

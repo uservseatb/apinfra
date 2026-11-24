@@ -19,6 +19,7 @@ const (
 	certIssueProd     = "prod"
 	legacyAppConf     = "app.conf"
 	legacySSLConf     = "ssl.conf"
+	streamSubDir      = "stream.d"
 	reloadPendingName = ".reload_pending"
 	reloadPendingMode = fileModePrivate
 )
@@ -102,13 +103,18 @@ func (f *VhostFS) UpdateMainNginxConfig() (bool, error) {
 	return true, nil
 }
 
-// PrepareConfDir creates nginx/conf and removes legacy conf files.
+// PrepareConfDir creates nginx/conf and nginx/stream.d and removes legacy conf files.
 func (f *VhostFS) PrepareConfDir() error {
 	confDir := f.confDir()
 
 	err := os.MkdirAll(confDir, dirModeTraversable) // #nosec G301
 	if err != nil {
 		return fmt.Errorf("mkdir conf.d: %w", err)
+	}
+
+	err = os.MkdirAll(f.streamDir(), dirModeTraversable) // #nosec G301
+	if err != nil {
+		return fmt.Errorf("mkdir stream.d: %w", err)
 	}
 
 	rmErr := os.Remove(filepath.Join(confDir, legacyAppConf))
@@ -127,12 +133,59 @@ func (f *VhostFS) PrepareConfDir() error {
 // WriteConfig writes a conf.d file with backup + optional validate callback.
 // A content change marks nginx/.reload_pending before returning.
 func (f *VhostFS) WriteConfig(fileName, content string, validate func() error) (bool, error) {
-	dest := filepath.Join(f.confDir(), fileName)
+	return f.writeManagedConfig(f.confDir(), fileName, content, validate)
+}
 
-	changed, err := writeWithBackup(dest, content, validate)
-	if err != nil || !changed {
-		return changed, err
+// WriteStreamConfig writes a stream.d file with backup + optional validate callback.
+func (f *VhostFS) WriteStreamConfig(fileName, content string, validate func() error) (bool, error) {
+	return f.writeManagedConfig(f.streamDir(), fileName, content, validate)
+}
+
+// RemoveStreamConfig deletes a stream.d file with backup + optional validate/rollback.
+func (f *VhostFS) RemoveStreamConfig(fileName string, validate func() error) (bool, error) {
+	dest := filepath.Join(f.streamDir(), fileName)
+
+	orig, err := os.ReadFile(dest) // #nosec G304 -- managed nginx stream conf
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("read stream config %s: %w", dest, err)
 	}
+
+	bakPath := dest + ".bak"
+
+	err = os.WriteFile(bakPath, orig, fileModeReadable) // #nosec G306,G703 -- managed infra path
+	if err != nil {
+		return false, fmt.Errorf("backup stream config %s: %w", dest, err)
+	}
+
+	err = os.Remove(dest)
+	if err != nil {
+		_ = os.Remove(bakPath)
+
+		return false, fmt.Errorf("remove stream config %s: %w", dest, err)
+	}
+
+	if validate != nil {
+		validateErr := validate()
+		if validateErr != nil {
+			restoreErr := os.WriteFile(dest, orig, fileModeReadable) // #nosec G306,G703 -- managed infra path
+			_ = os.Remove(bakPath)
+
+			if restoreErr != nil {
+				return false, fmt.Errorf(
+					"nginx -t failed after removing %s: %w; restore also failed: %w",
+					fileName, validateErr, restoreErr,
+				)
+			}
+
+			return false, fmt.Errorf("nginx -t failed after removing %s, restored: %w", fileName, validateErr)
+		}
+	}
+
+	_ = os.Remove(bakPath)
 
 	err = f.MarkReloadPending()
 	if err != nil {
@@ -237,17 +290,28 @@ func (f *VhostFS) ClearReloadPending() error {
 }
 
 // SnapshotConfigs reads current conf files for the given identity→fileName map.
+// The special identity stream.sni snapshots nginx/stream.d/sni.conf.
 func (f *VhostFS) SnapshotConfigs(identityToFileName map[string]string) map[string]nginx.ConfigSnapshot {
 	out := make(map[string]nginx.ConfigSnapshot, len(identityToFileName))
 	confDir := f.confDir()
 
 	for identity, fileName := range identityToFileName {
-		path := filepath.Join(confDir, fileName)
+		subDir := ""
+		dir := confDir
+
+		if identity == nginx.StreamSNIIdentity {
+			subDir = streamSubDir
+			dir = f.streamDir()
+		}
+
+		path := filepath.Join(dir, fileName)
 
 		data, err := os.ReadFile(path) // #nosec G304 -- managed nginx conf
 		if err != nil {
 			if os.IsNotExist(err) {
-				out[identity] = nginx.ConfigSnapshot{FileName: fileName, Existed: false, Data: nil}
+				out[identity] = nginx.ConfigSnapshot{
+					FileName: fileName, SubDir: subDir, Existed: false, Data: nil,
+				}
 
 				continue
 			}
@@ -257,7 +321,9 @@ func (f *VhostFS) SnapshotConfigs(identityToFileName map[string]string) map[stri
 			continue
 		}
 
-		out[identity] = nginx.ConfigSnapshot{FileName: fileName, Existed: true, Data: data}
+		out[identity] = nginx.ConfigSnapshot{
+			FileName: fileName, SubDir: subDir, Existed: true, Data: data,
+		}
 	}
 
 	return out
@@ -289,6 +355,50 @@ func (f *VhostFS) RestoreConfigSnapshots(
 	}
 
 	return changed
+}
+
+// RewritePublicSSLListenToInternal rewrites public :443 ssl listen lines to the
+// internal SNI backend listen in the named conf.d files (after snapshot restore).
+func (f *VhostFS) RewritePublicSSLListenToInternal(
+	fileNames []string,
+	validate func() error,
+) (bool, error) {
+	anyChanged := false
+
+	for _, fileName := range fileNames {
+		fileName = strings.TrimSpace(fileName)
+		if fileName == "" {
+			continue
+		}
+
+		path := filepath.Join(f.confDir(), fileName)
+
+		data, err := os.ReadFile(path) // #nosec G304 -- managed nginx conf
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+
+			return anyChanged, fmt.Errorf("read conf %s: %w", path, err)
+		}
+
+		if !strings.Contains(string(data), nginx.SSLListenPublic) {
+			continue
+		}
+
+		rewritten := strings.ReplaceAll(string(data), nginx.SSLListenPublic, nginx.SSLListenInternal)
+
+		changed, writeErr := f.writeManagedConfig(f.confDir(), fileName, rewritten, validate)
+		if writeErr != nil {
+			return anyChanged, fmt.Errorf("rewrite ssl listen %s: %w", fileName, writeErr)
+		}
+
+		if changed {
+			anyChanged = true
+		}
+	}
+
+	return anyChanged, nil
 }
 
 // CertFilesPresent reports whether PEM files exist for domain+mode.
@@ -425,12 +535,35 @@ func (f *VhostFS) PutProdCertMaterialFromDisk(domain, provider string) error {
 	return nil
 }
 
+func (f *VhostFS) writeManagedConfig(
+	dir, fileName, content string,
+	validate func() error,
+) (bool, error) {
+	dest := filepath.Join(dir, fileName)
+
+	changed, err := writeWithBackup(dest, content, validate)
+	if err != nil || !changed {
+		return changed, err
+	}
+
+	err = f.MarkReloadPending()
+	if err != nil {
+		return true, err
+	}
+
+	return true, nil
+}
+
 func (f *VhostFS) nginxDir() string {
 	return filepath.Join(f.infraDir, "nginx")
 }
 
 func (f *VhostFS) confDir() string {
 	return filepath.Join(f.nginxDir(), "conf")
+}
+
+func (f *VhostFS) streamDir() string {
+	return filepath.Join(f.nginxDir(), streamSubDir)
 }
 
 func nginxHostRelativeFiles() []string {
@@ -468,7 +601,12 @@ func dropCertStash(stash string) {
 }
 
 func (f *VhostFS) restoreConfSnapshot(snap nginx.ConfigSnapshot) bool {
-	path := filepath.Join(f.confDir(), snap.FileName)
+	dir := f.confDir()
+	if snap.SubDir == streamSubDir {
+		dir = f.streamDir()
+	}
+
+	path := filepath.Join(dir, snap.FileName)
 
 	if !snap.Existed {
 		err := os.Remove(path)

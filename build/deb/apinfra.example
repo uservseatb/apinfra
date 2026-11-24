@@ -9,7 +9,7 @@ namespace=dev
 # Config repository (HTTPS). Leave repoToken empty for public repos.
 repo=https://github.com/uservseatb/apinfra-demo-conf.git
 repoToken=
-repoBranch=main
+repoBranch=since-v0.6.0
 
 # Optional: private container registry. Leave empty to skip docker login.
 containerRegistryHost=

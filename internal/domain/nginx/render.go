@@ -21,12 +21,67 @@ type nginxTemplates struct {
 	httpDomain string
 	httpPort   string
 	httpsPort  string
+	streamSNI  string
 }
 
 func (s *RoutingService) syncNginxServiceConfigs(
 	projects []Project,
+	stream StreamSNI,
 	validate func() error,
 ) (bool, error) {
+	err := validateStreamUpstreams(stream)
+	if err != nil {
+		return false, err
+	}
+
+	removed, err := s.prepareStreamAndStale(projects, stream.Enabled, validate)
+	if err != nil {
+		return false, err
+	}
+
+	anyConfChanged, err := s.writeServiceConfigs(projects, stream.Enabled, validate)
+	if err != nil {
+		return removed, err
+	}
+
+	defaultChanged, err := s.writeDefaultConfig(validate)
+	if err != nil {
+		return removed || anyConfChanged, err
+	}
+
+	streamChanged, err := s.syncStreamSNIFile(projects, stream, nil, validate)
+	if err != nil {
+		return removed || anyConfChanged || defaultChanged, err
+	}
+
+	return removed || anyConfChanged || defaultChanged || streamChanged, nil
+}
+
+func (s *RoutingService) prepareStreamAndStale(
+	projects []Project,
+	sniEnabled bool,
+	validate func() error,
+) (bool, error) {
+	var removed bool
+
+	if !sniEnabled {
+		streamRemoved, err := s.fs.RemoveStreamConfig(StreamSNIFileName, validate)
+		if err != nil {
+			return false, fmt.Errorf("remove stream sni config: %w", err)
+		}
+
+		removed = streamRemoved
+	}
+
+	staleRemoved, err := s.fs.RemoveStaleConfigs(proxyConfKeepSet(projects), validate)
+	if err != nil {
+		return false, fmt.Errorf("remove stale configs: %w", err)
+	}
+
+	return removed || staleRemoved, nil
+}
+
+func proxyConfKeepSet(projects []Project) map[string]struct{} {
 	keep := map[string]struct{}{
 		defaultConfName: {},
 	}
@@ -39,22 +94,53 @@ func (s *RoutingService) syncNginxServiceConfigs(
 		}
 	}
 
-	removed, err := s.fs.RemoveStaleConfigs(keep, validate)
-	if err != nil {
-		return false, fmt.Errorf("remove stale configs: %w", err)
+	return keep
+}
+
+func (s *RoutingService) syncStreamSNIFile(
+	projects []Project,
+	stream StreamSNI,
+	installedByName map[string]CertDescriptor,
+	validate func() error,
+) (bool, error) {
+	if !stream.Enabled {
+		return false, nil
 	}
 
-	anyConfChanged, err := s.writeServiceConfigs(projects, validate)
-	if err != nil {
-		return removed, err
+	if installedByName == nil {
+		var err error
+
+		installedByName, err = s.installedCertMap()
+		if err != nil {
+			return false, fmt.Errorf("load .certs.json for stream sni: %w", err)
+		}
 	}
 
-	defaultChanged, err := s.writeDefaultConfig(validate)
-	if err != nil {
-		return removed || anyConfChanged, err
+	return s.writeStreamSNIConfig(projects, stream, installedByName, validate)
+}
+
+func validateStreamUpstreams(stream StreamSNI) error {
+	if !stream.Enabled {
+		return nil
 	}
 
-	return removed || anyConfChanged || defaultChanged, nil
+	if !stream.RejectDefault && stream.Default.Host == "" {
+		return fmt.Errorf(
+			"%w: default project=%s service=%s",
+			ErrStreamUpstreamUnresolved, stream.Default.Project, stream.Default.Service,
+		)
+	}
+
+	for _, route := range stream.Routes {
+		if route.Upstream.Host == "" {
+			return fmt.Errorf(
+				"%w: route server-name=%s project=%s service=%s",
+				ErrStreamUpstreamUnresolved, route.ServerName, route.Upstream.Project, route.Upstream.Service,
+			)
+		}
+	}
+
+	return nil
 }
 
 func hasProxyConf(route Route) bool {
@@ -103,6 +189,7 @@ func applyProxyUpstream(body string, route Route) string {
 
 func (s *RoutingService) rewriteConfigsIfCertsChanged(
 	projects []Project,
+	stream StreamSNI,
 	validate func() error,
 	anyConfChanged, certsChanged bool,
 ) (bool, error) {
@@ -110,12 +197,17 @@ func (s *RoutingService) rewriteConfigsIfCertsChanged(
 		return anyConfChanged, nil
 	}
 
-	changed, err := s.writeServiceConfigs(projects, validate)
+	changed, err := s.writeServiceConfigs(projects, stream.Enabled, validate)
 	if err != nil {
 		return anyConfChanged, err
 	}
 
-	return anyConfChanged || changed, nil
+	streamChanged, err := s.syncStreamSNIFile(projects, stream, nil, validate)
+	if err != nil {
+		return anyConfChanged || changed, err
+	}
+
+	return anyConfChanged || changed || streamChanged, nil
 }
 
 func (s *RoutingService) writeDefaultConfig(validate func() error) (bool, error) {
@@ -134,6 +226,7 @@ func (s *RoutingService) writeDefaultConfig(validate func() error) (bool, error)
 
 func (s *RoutingService) writeServiceConfigs(
 	projects []Project,
+	sniEnabled bool,
 	validate func() error,
 ) (bool, error) {
 	tmpl, err := loadNginxTemplates()
@@ -150,7 +243,7 @@ func (s *RoutingService) writeServiceConfigs(
 
 	for _, cfg := range projects {
 		for _, route := range cfg.Routes {
-			content, ok := s.renderRouteConfig(route, installedByName, tmpl)
+			content, ok := s.renderRouteConfig(route, installedByName, tmpl, sniEnabled)
 			if !ok {
 				continue
 			}
@@ -169,6 +262,27 @@ func (s *RoutingService) writeServiceConfigs(
 	}
 
 	return anyChanged, nil
+}
+
+func (s *RoutingService) writeStreamSNIConfig(
+	projects []Project,
+	stream StreamSNI,
+	installedByName map[string]CertDescriptor,
+	validate func() error,
+) (bool, error) {
+	tmpl, err := loadNginxTemplates()
+	if err != nil {
+		return false, err
+	}
+
+	content := s.renderStreamSNIConfig(projects, stream, installedByName, tmpl.streamSNI)
+
+	changed, err := s.fs.WriteStreamConfig(StreamSNIFileName, content, validate)
+	if err != nil {
+		return false, fmt.Errorf("write stream sni config: %w", err)
+	}
+
+	return changed, nil
 }
 
 func loadNginxTemplates() (nginxTemplates, error) {
@@ -199,11 +313,17 @@ func loadNginxTemplates() (nginxTemplates, error) {
 		return tmpl, fmt.Errorf("load templates/https-port.conf.tpl: %w", err)
 	}
 
+	streamSNI, err := assets.LoadText("templates/stream-sni.conf.tpl")
+	if err != nil {
+		return tmpl, fmt.Errorf("load templates/stream-sni.conf.tpl: %w", err)
+	}
+
 	tmpl.server = server
 	tmpl.ssl = ssl
 	tmpl.httpDomain = httpDomain
 	tmpl.httpPort = httpPort
 	tmpl.httpsPort = httpsPort
+	tmpl.streamSNI = streamSNI
 
 	return tmpl, nil
 }
@@ -212,10 +332,11 @@ func (s *RoutingService) renderRouteConfig(
 	route Route,
 	installedByName map[string]CertDescriptor,
 	tmpl nginxTemplates,
+	sniEnabled bool,
 ) (string, bool) {
 	switch {
 	case route.DomainName != "":
-		return s.renderDomainProxy(route, installedByName, tmpl.server, tmpl.ssl, tmpl.httpDomain), true
+		return s.renderDomainProxy(route, installedByName, tmpl.server, tmpl.ssl, tmpl.httpDomain, sniEnabled), true
 	case route.InboundPort != "" && hasComposeUpstream(route):
 		return s.renderPortProxy(route, installedByName, tmpl.httpPort, tmpl.httpsPort), true
 	default:
@@ -227,6 +348,7 @@ func (s *RoutingService) renderDomainProxy(
 	route Route,
 	installedByName map[string]CertDescriptor,
 	serverTemplate, sslTemplate, httpDomainTemplate string,
+	sniEnabled bool,
 ) string {
 	mode := confCertMode(route, installedByName)
 	if mode == CertModeNone {
@@ -246,6 +368,7 @@ func (s *RoutingService) renderDomainProxy(
 	issued, metaOK := installedByName[name]
 	if metaOK && issued.Mode == mode && s.fs.CertFilesPresent(name, mode) && hasUpstream(route) {
 		block := sslTemplate
+		block = strings.ReplaceAll(block, tplPlaceholder("sslListen"), sslListenLines(sniEnabled))
 		block = strings.ReplaceAll(block, tplPlaceholder("domain"), route.DomainName)
 		block = strings.ReplaceAll(block, tplPlaceholder("domainEscaped"), strings.ReplaceAll(route.DomainName, ".", "\\."))
 		block = strings.ReplaceAll(block, tplPlaceholder("certSSLDir"), certNginxSSLDir(name, mode))
@@ -256,6 +379,14 @@ func (s *RoutingService) renderDomainProxy(
 	}
 
 	return builder.String()
+}
+
+func sslListenLines(sniEnabled bool) string {
+	if sniEnabled {
+		return SSLListenInternal
+	}
+
+	return SSLListenPublic
 }
 
 func (s *RoutingService) renderPortProxy(
@@ -281,6 +412,71 @@ func (s *RoutingService) renderPortProxy(
 	body = strings.ReplaceAll(body, tplPlaceholder("inboundPort"), route.InboundPort)
 
 	return applyProxyUpstream(body, route)
+}
+
+func (s *RoutingService) renderStreamSNIConfig(
+	projects []Project,
+	stream StreamSNI,
+	installedByName map[string]CertDescriptor,
+	template string,
+) string {
+	var entries strings.Builder
+
+	for _, project := range projects {
+		for _, route := range project.Routes {
+			if !s.domainHasHTTPSVhost(route, installedByName) {
+				continue
+			}
+
+			entries.WriteString("    ")
+			entries.WriteString(route.DomainName)
+			entries.WriteString("  ")
+			entries.WriteString(internalHTTPSListen)
+			entries.WriteString(";\n")
+		}
+	}
+
+	for _, route := range stream.Routes {
+		entries.WriteString("    ")
+		entries.WriteString(route.ServerName)
+		entries.WriteString("  ")
+		entries.WriteString(net.JoinHostPort(route.Upstream.Host, route.Upstream.Port))
+		entries.WriteString(";\n")
+	}
+
+	entries.WriteString("    default           ")
+
+	switch {
+	case stream.RejectDefault:
+		entries.WriteString(`"";`)
+	default:
+		entries.WriteString(net.JoinHostPort(stream.Default.Host, stream.Default.Port))
+		entries.WriteString(";")
+	}
+
+	entries.WriteString("\n")
+
+	return strings.ReplaceAll(template, tplPlaceholder("mapEntries"), entries.String())
+}
+
+// domainHasHTTPSVhost reports whether the domain vhost will render an HTTPS server
+// block listening on the internal SNI backend port (same gates as renderDomainProxy).
+func (s *RoutingService) domainHasHTTPSVhost(
+	route Route,
+	installedByName map[string]CertDescriptor,
+) bool {
+	if route.DomainName == "" {
+		return false
+	}
+
+	mode := confCertMode(route, installedByName)
+	if mode == CertModeNone || !hasUpstream(route) {
+		return false
+	}
+
+	issued, ok := installedByName[route.DomainName]
+
+	return ok && issued.Mode == mode && s.fs.CertFilesPresent(route.DomainName, mode)
 }
 
 // confCertMode is the mode nginx confs are rendered for: settings none always wins;
@@ -350,6 +546,9 @@ func identityToConfFileNames(projects []Project) map[string]string {
 			out[name] = routeConfFileName(cfg, route)
 		}
 	}
+
+	// Always snapshot stream.d/sni.conf so enable/disable rolls back safely.
+	out[StreamSNIIdentity] = StreamSNIFileName
 
 	return out
 }

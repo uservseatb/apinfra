@@ -80,7 +80,7 @@ func (s *RoutingService) ProcessRouting(ctx context.Context, params RoutingParam
 		return err
 	}
 
-	anyConfChanged, err := s.syncNginxServiceConfigs(params.Projects, validate)
+	anyConfChanged, err := s.syncNginxServiceConfigs(params.Projects, params.Stream, validate)
 	if err != nil {
 		return err
 	}
@@ -109,13 +109,13 @@ func (s *RoutingService) ProcessRouting(ctx context.Context, params RoutingParam
 
 	if !canIssue {
 		return s.finishNginxWithoutCerts(
-			ctx, params.Projects, validate, confSnaps, installedByName,
+			ctx, params.Projects, params.Stream, validate, confSnaps, installedByName,
 			params.ProxyRunning, isMainUpdated, anyConfChanged, certsChanged, forceReload,
 		)
 	}
 
 	return s.finishNginxWithCerts(
-		ctx, params.Projects, validate, installedByName, confSnaps,
+		ctx, params.Projects, params.Stream, validate, installedByName, confSnaps,
 		params.PublicIP, isMainUpdated, anyConfChanged, certsChanged, forceReload,
 	)
 }

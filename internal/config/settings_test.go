@@ -40,11 +40,20 @@ func (r *fakeRepo) ReadFile(path string) ([]byte, error) {
 }
 
 func readSettings(raw string) ([]config.ServiceConfig, error) {
+	got, err := readSettingsDoc(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	return got.Projects, nil
+}
+
+func readSettingsDoc(raw string) (config.Settings, error) {
 	repo := &fakeRepo{files: map[string]string{testNamespace + "/settings.yml": raw}}
 
 	got, err := config.ReadSettings(repo, testNamespace)
 	if err != nil {
-		return nil, fmt.Errorf("read settings: %w", err)
+		return config.Settings{}, fmt.Errorf("read settings: %w", err)
 	}
 
 	return got, nil
@@ -711,6 +720,215 @@ func TestReadSettings_ProxyAndCertErrors(t *testing.T) {
 			t.Parallel()
 
 			_, err := readSettings(doc(tcase.project))
+			if err == nil || !strings.Contains(err.Error(), tcase.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tcase.wantErr)
+			}
+		})
+	}
+}
+
+func streamSNI(lines ...string) string {
+	var b strings.Builder
+
+	b.WriteString("stream:\n  sni:\n")
+
+	for _, line := range lines {
+		b.WriteString("    " + line + "\n")
+	}
+
+	return b.String()
+}
+
+func TestReadSettings_StreamSNI(t *testing.T) {
+	t.Parallel()
+
+	shop := project("shop", proxy("domain-name: shop.example.com"))
+	broker := project("iot-broker")
+
+	tests := []struct {
+		name string
+		raw  string
+		want config.StreamSNI
+	}{
+		{
+			name: "absent_stream",
+			raw:  doc(shop),
+			want: config.StreamSNI{},
+		},
+		{
+			name: "enabled_reject",
+			raw: streamSNI(
+				"enabled: true",
+				"default: reject",
+			) + doc(shop),
+			want: config.StreamSNI{Enabled: true, RejectDefault: true},
+		},
+		{
+			name: "enabled_compose_default_and_routes",
+			raw: streamSNI(
+				"enabled: true",
+				"default:",
+				"  project: iot-broker",
+				"  service-name: broker",
+				"  port: 8883",
+				"routes:",
+				"  - server-name: mqtt.example.com",
+				"    project: iot-broker",
+				"    service-name: broker",
+				"    port: 8883",
+			) + doc(shop, broker),
+			want: config.StreamSNI{
+				Enabled: true,
+				Default: config.StreamTarget{Project: "iot-broker", Service: "broker", Port: "8883"},
+				Routes: []config.StreamSNIRoute{{
+					Project: "iot-broker", Service: "broker", Port: "8883",
+					ServerName: "mqtt.example.com",
+				}},
+			},
+		},
+		{
+			name: "disabled_with_default_still_parsed",
+			raw: streamSNI(
+				"enabled: false",
+				"default: reject",
+			) + doc(shop),
+			want: config.StreamSNI{RejectDefault: true},
+		},
+	}
+
+	for _, tcase := range tests {
+		t.Run(tcase.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := readSettingsDoc(tcase.raw)
+			if err != nil {
+				t.Fatalf("ReadSettings: %v", err)
+			}
+
+			if got.Stream.Enabled != tcase.want.Enabled ||
+				got.Stream.RejectDefault != tcase.want.RejectDefault ||
+				got.Stream.Default != tcase.want.Default {
+				t.Fatalf("Stream = %#v, want %#v", got.Stream, tcase.want)
+			}
+
+			if len(got.Stream.Routes) != len(tcase.want.Routes) {
+				t.Fatalf("Routes = %#v, want %#v", got.Stream.Routes, tcase.want.Routes)
+			}
+
+			for i := range got.Stream.Routes {
+				if got.Stream.Routes[i] != tcase.want.Routes[i] {
+					t.Fatalf("Routes[%d] = %#v, want %#v", i, got.Stream.Routes[i], tcase.want.Routes[i])
+				}
+			}
+		})
+	}
+}
+
+func TestReadSettings_StreamSNIErrors(t *testing.T) {
+	t.Parallel()
+
+	shop := project("shop", proxy("domain-name: shop.example.com"))
+	broker := project("iot-broker")
+	disabledBroker := project("iot-broker", ln("enabled: false"))
+
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{
+			name:    "drop_scalar",
+			raw:     streamSNI("enabled: true", "default: drop") + doc(shop),
+			wantErr: `must be "reject"`,
+		},
+		{
+			name:    "enabled_missing_default",
+			raw:     streamSNI("enabled: true") + doc(shop),
+			wantErr: "stream.sni.default is required",
+		},
+		{
+			name:    "enabled_not_bool",
+			raw:     streamSNI("enabled: yes", "default: reject") + doc(shop),
+			wantErr: "stream.sni.enabled must be a boolean",
+		},
+		{
+			name: "bad_hostname",
+			raw: streamSNI(
+				"enabled: true",
+				"default: reject",
+				"routes:",
+				"  - server-name: not_a_host",
+				"    project: iot-broker",
+				"    service-name: broker",
+				"    port: 8883",
+			) + doc(shop, broker),
+			wantErr: "fully-qualified hostname",
+		},
+		{
+			name: "duplicate_server_name",
+			raw: streamSNI(
+				"enabled: true",
+				"default: reject",
+				"routes:",
+				"  - server-name: mqtt.example.com",
+				"    project: iot-broker",
+				"    service-name: broker",
+				"    port: 8883",
+				"  - server-name: MQTT.example.com",
+				"    project: iot-broker",
+				"    service-name: broker",
+				"    port: 8883",
+			) + doc(shop, broker),
+			wantErr: "duplicated",
+		},
+		{
+			name: "server_name_conflicts_domain",
+			raw: streamSNI(
+				"enabled: true",
+				"default: reject",
+				"routes:",
+				"  - server-name: shop.example.com",
+				"    project: iot-broker",
+				"    service-name: broker",
+				"    port: 8883",
+			) + doc(shop, broker),
+			wantErr: "conflicts with proxy.inbound.domain-name",
+		},
+		{
+			name: "unknown_project",
+			raw: streamSNI(
+				"enabled: true",
+				"default:",
+				"  project: missing",
+				"  service-name: broker",
+				"  port: 8883",
+			) + doc(shop),
+			wantErr: "not an enabled project",
+		},
+		{
+			name: "disabled_project",
+			raw: streamSNI(
+				"enabled: true",
+				"default:",
+				"  project: iot-broker",
+				"  service-name: broker",
+				"  port: 8883",
+			) + doc(shop, disabledBroker),
+			wantErr: "not an enabled project",
+		},
+		{
+			name: "inbound_port_8443_reserved",
+			raw: streamSNI("enabled: true", "default: reject") +
+				doc(project("shop", proxy("port: 8443"))),
+			wantErr: "reserved for the internal HTTPS listener",
+		},
+	}
+
+	for _, tcase := range tests {
+		t.Run(tcase.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := readSettingsDoc(tcase.raw)
 			if err == nil || !strings.Contains(err.Error(), tcase.wantErr) {
 				t.Fatalf("err = %v, want containing %q", err, tcase.wantErr)
 			}

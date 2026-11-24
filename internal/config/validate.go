@@ -43,36 +43,43 @@ var (
 )
 
 func validateDomainName(domain, projectName string) error {
-	label := fmt.Sprintf("project %s: proxy.inbound.domain-name", projectName)
+	return validateHostname(domain, fmt.Sprintf("project %s: proxy.inbound.domain-name", projectName), true)
+}
 
+// validateHostname checks a DNS hostname. emptyOK allows empty when the field is optional.
+func validateHostname(domain, fieldLabel string, emptyOK bool) error {
 	if domain == "" {
-		return nil
+		if emptyOK {
+			return nil
+		}
+
+		return formatSettingsError(fieldLabel + " is required")
 	}
 
 	if len(domain) > maxDomainLen {
-		return formatSettingsError(label + " is too long (max 253 characters)")
+		return formatSettingsError(fieldLabel + " is too long (max 253 characters)")
 	}
 
 	if strings.ContainsAny(domain, " \t\r\n") {
-		return formatSettingsError(label + " must not contain whitespace")
+		return formatSettingsError(fieldLabel + " must not contain whitespace")
 	}
 
 	// Block path traversal, nginx directive breakout, and shell metacharacters.
 	if strings.ContainsAny(domain, invalidDomainMeta) {
-		return formatSettingsError(label + " contains invalid characters")
+		return formatSettingsError(fieldLabel + " contains invalid characters")
 	}
 
 	if strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") {
-		return formatSettingsError(label + " must not start or end with a dot")
+		return formatSettingsError(fieldLabel + " must not start or end with a dot")
 	}
 
 	labels := strings.Split(domain, ".")
 	if len(labels) < minDomainLabels {
-		return formatSettingsError(label + " must be a fully-qualified hostname (e.g. app.example.com)")
+		return formatSettingsError(fieldLabel + " must be a fully-qualified hostname (e.g. app.example.com)")
 	}
 
 	for _, part := range labels {
-		err := validateDomainLabel(part, label)
+		err := validateDomainLabel(part, fieldLabel)
 		if err != nil {
 			return err
 		}

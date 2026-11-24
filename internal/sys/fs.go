@@ -21,6 +21,7 @@ func EnsureInfraLayout(infraDirPath string) error {
 		infraDirPath,
 		filepath.Join(infraDirPath, "nginx"),
 		filepath.Join(infraDirPath, "nginx", "conf"),
+		filepath.Join(infraDirPath, "nginx", "stream.d"),
 		filepath.Join(infraDirPath, "nginx", "leconf"),
 		filepath.Join(infraDirPath, "certbot"),
 		filepath.Join(infraDirPath, "certbot", "conf"),

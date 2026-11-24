@@ -66,7 +66,7 @@ func (s *GitConfigSource) LoadWorkspace(ctx context.Context, namespace string) (
 		return nil, fmt.Errorf("%w: %s", errPlaceholderRepoURL, s.configPath)
 	}
 
-	repo, configs, err := s.cloneAndReadSettings(ctx, namespace)
+	repo, settings, err := s.cloneAndReadSettings(ctx, namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -81,13 +81,14 @@ func (s *GitConfigSource) LoadWorkspace(ctx context.Context, namespace string) (
 		return nil, fmt.Errorf("read host config: %w", err)
 	}
 
-	projects, err := projectSpecsFromRepo(ctx, repo, configs)
+	projects, err := projectSpecsFromRepo(ctx, repo, settings.Projects)
 	if err != nil {
 		return nil, fmt.Errorf("read project files: %w", err)
 	}
 
 	return &deployment.Workspace{
 		Projects:     projects,
+		Stream:       toDeploymentStream(settings.Stream),
 		HostEnv:      hostEnv,
 		HostSettings: hostSettings,
 	}, nil
@@ -96,7 +97,7 @@ func (s *GitConfigSource) LoadWorkspace(ctx context.Context, namespace string) (
 func (s *GitConfigSource) cloneAndReadSettings(
 	ctx context.Context,
 	namespace string,
-) (*git.Repo, []config.ServiceConfig, error) {
+) (*git.Repo, config.Settings, error) {
 	log.Printf("[repo] config source repo=%s branch=%s", sys.RedactURLUserinfo(s.repoURL), s.repoBranch)
 	log.Printf("[repo] loading in-memory clone (auth=%v)", s.repoToken != "")
 
@@ -112,19 +113,19 @@ func (s *GitConfigSource) cloneAndReadSettings(
 		Events: s.events,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("load config repo: %w", err)
+		return nil, config.Settings{}, fmt.Errorf("load config repo: %w", err)
 	}
 
 	log.Printf("[repo] in-memory clone ready")
 
-	configs, err := config.ReadSettings(repo, namespace)
+	settings, err := config.ReadSettings(repo, namespace)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read settings: %w", err)
+		return nil, config.Settings{}, fmt.Errorf("read settings: %w", err)
 	}
 
-	log.Printf("[update] loaded %d project(s)", len(configs))
+	log.Printf("[update] loaded %d project(s) streamSNI=%v", len(settings.Projects), settings.Stream.Enabled)
 
-	for _, project := range configs {
+	for _, project := range settings.Projects {
 		log.Printf("[update]   project=%s routes=%d allowPorts=%v",
 			project.Name, len(project.Routes), project.AllowPortsMapping)
 
@@ -137,7 +138,7 @@ func (s *GitConfigSource) cloneAndReadSettings(
 		}
 	}
 
-	return repo, configs, nil
+	return repo, settings, nil
 }
 
 func projectSpecsFromRepo(
@@ -249,6 +250,33 @@ func toDeploymentRoutes(routes []config.Route) []deployment.Route {
 	}
 
 	return out
+}
+
+func toDeploymentStream(stream config.StreamSNI) deployment.StreamSNI {
+	routes := make([]deployment.StreamSNIRoute, 0, len(stream.Routes))
+	for _, route := range stream.Routes {
+		routes = append(routes, deployment.StreamSNIRoute{
+			Project:    route.Project,
+			Service:    route.Service,
+			Port:       route.Port,
+			ServerName: route.ServerName,
+		})
+	}
+
+	if len(routes) == 0 {
+		routes = nil
+	}
+
+	return deployment.StreamSNI{
+		Enabled:       stream.Enabled,
+		RejectDefault: stream.RejectDefault,
+		Default: deployment.StreamTarget{
+			Project: stream.Default.Project,
+			Service: stream.Default.Service,
+			Port:    stream.Default.Port,
+		},
+		Routes: routes,
+	}
 }
 
 func isPlaceholderRepoURL(repoURL string) bool {

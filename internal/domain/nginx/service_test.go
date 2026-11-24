@@ -1474,3 +1474,285 @@ func TestProcessRouting_MultiRouteProject(t *testing.T) {
 		t.Fatalf("installed = %v", installed)
 	}
 }
+
+func (e *routeEnv) streamConf(t *testing.T) (string, bool) {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(e.infra, "nginx", "stream.d", nginx.StreamSNIFileName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false
+		}
+
+		t.Fatalf("read stream sni conf: %v", err)
+	}
+
+	return string(data), true
+}
+
+func TestProcessRouting_StreamSNI(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disabled_keeps_public_443", func(t *testing.T) {
+		t.Parallel()
+
+		env := newRouteEnv(t)
+
+		err := env.runLive(domainProject("mock"))
+		if err != nil {
+			t.Fatalf("ProcessRouting: %v", err)
+		}
+
+		conf, ok := env.conf(t, appConfFile)
+		if !ok {
+			t.Fatal("domain conf missing")
+		}
+
+		assertContains(t, conf, "listen 443 ssl;", "listen [::]:443 ssl;", "listen 80;")
+		assertAbsent(t, conf, "127.0.0.1:8443")
+
+		if _, ok := env.streamConf(t); ok {
+			t.Fatal("stream sni.conf must not exist when SNI is disabled")
+		}
+	})
+
+	t.Run("enabled_reject_map_and_internal_listen", func(t *testing.T) {
+		t.Parallel()
+
+		env := newRouteEnv(t)
+		project := domainProject("mock")
+		stream := nginx.StreamSNI{
+			Enabled:       true,
+			RejectDefault: true,
+			Routes: []nginx.StreamSNIRoute{{
+				ServerName: "mqtt.example.com",
+				Upstream: nginx.StreamUpstream{
+					Project: "iot-broker", Service: "broker", Port: "8883",
+					Host: "broker.apinfra_iot-broker",
+				},
+			}},
+		}
+
+		err := env.run(nginx.RoutingParams{
+			Projects: []nginx.Project{project}, Stream: stream,
+			ProxyRunning: true, ProxyReady: true,
+		})
+		if err != nil {
+			t.Fatalf("ProcessRouting: %v", err)
+		}
+
+		conf, ok := env.conf(t, appConfFile)
+		if !ok {
+			t.Fatal("domain conf missing")
+		}
+
+		assertContains(t, conf, "listen 127.0.0.1:8443 ssl;", "listen 80;", "return 301 https://")
+		assertAbsent(t, conf, "listen 443 ssl;", "listen [::]:443 ssl;")
+
+		streamConf, ok := env.streamConf(t)
+		if !ok {
+			t.Fatal("stream sni.conf missing")
+		}
+
+		assertContains(t, streamConf,
+			"hostnames;",
+			"app.example.com  127.0.0.1:8443;",
+			"mqtt.example.com  broker.apinfra_iot-broker:8883;",
+			`default           "";`,
+			"listen 443;",
+			"listen [::]:443;",
+			"ssl_preread on;",
+			"proxy_timeout 1d;",
+		)
+	})
+
+	t.Run("enabled_compose_default", func(t *testing.T) {
+		t.Parallel()
+
+		env := newRouteEnv(t)
+		stream := nginx.StreamSNI{
+			Enabled: true,
+			Default: nginx.StreamUpstream{
+				Project: "iot-broker", Service: "broker", Port: "8883",
+				Host: "broker.apinfra_iot-broker",
+			},
+		}
+
+		err := env.run(nginx.RoutingParams{
+			Projects: []nginx.Project{domainProject("mock")}, Stream: stream,
+			ProxyRunning: true, ProxyReady: true,
+		})
+		if err != nil {
+			t.Fatalf("ProcessRouting: %v", err)
+		}
+
+		streamConf, ok := env.streamConf(t)
+		if !ok {
+			t.Fatal("stream sni.conf missing")
+		}
+
+		assertContains(t, streamConf,
+			"app.example.com  127.0.0.1:8443;",
+			"default           broker.apinfra_iot-broker:8883;",
+		)
+		assertAbsent(t, streamConf, `default           "";`)
+	})
+
+	t.Run("cert_none_domain_omitted_from_map", func(t *testing.T) {
+		t.Parallel()
+
+		env := newRouteEnv(t)
+		stream := nginx.StreamSNI{Enabled: true, RejectDefault: true}
+
+		err := env.run(nginx.RoutingParams{
+			Projects: []nginx.Project{domainProject("none")}, Stream: stream,
+			ProxyRunning: true, ProxyReady: true,
+		})
+		if err != nil {
+			t.Fatalf("ProcessRouting: %v", err)
+		}
+
+		conf, ok := env.conf(t, appConfFile)
+		if !ok {
+			t.Fatal("domain conf missing")
+		}
+
+		assertContains(t, conf, "listen 80;")
+		assertAbsent(t, conf, "ssl_certificate", "127.0.0.1:8443")
+
+		streamConf, ok := env.streamConf(t)
+		if !ok {
+			t.Fatal("stream sni.conf missing")
+		}
+
+		assertAbsent(t, streamConf, "app.example.com")
+		assertContains(t, streamConf, `default           "";`)
+	})
+
+	t.Run("unresolved_upstream_fails_before_write", func(t *testing.T) {
+		t.Parallel()
+
+		env := newRouteEnv(t)
+		stream := nginx.StreamSNI{
+			Enabled: true,
+			Default: nginx.StreamUpstream{
+				Project: "iot-broker", Service: "broker", Port: "8883",
+			},
+		}
+
+		err := env.run(nginx.RoutingParams{
+			Projects: []nginx.Project{domainProject("mock")}, Stream: stream,
+			ProxyRunning: true, ProxyReady: true,
+		})
+		if err == nil || !strings.Contains(err.Error(), "stream.sni upstream unresolved") {
+			t.Fatalf("err = %v, want unresolved upstream", err)
+		}
+
+		if _, ok := env.streamConf(t); ok {
+			t.Fatal("sni.conf must not be written when upstream is unresolved")
+		}
+	})
+}
+
+func TestProcessRouting_StreamSNIEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("domain_omitted_from_map_until_cert_present", func(t *testing.T) {
+		t.Parallel()
+
+		env := newRouteEnv(t)
+		stream := nginx.StreamSNI{Enabled: true, RejectDefault: true}
+		project := domainProject("prod")
+
+		// Proxy not running: conf sync runs, ACME does not — no cert on disk yet.
+		err := env.run(nginx.RoutingParams{
+			Projects: []nginx.Project{project}, Stream: stream,
+			ProxyRunning: false, ProxyReady: false,
+		})
+		if err != nil {
+			t.Fatalf("cycle without proxy: %v", err)
+		}
+
+		streamConf, ok := env.streamConf(t)
+		if !ok {
+			t.Fatal("stream sni.conf missing")
+		}
+
+		assertAbsent(t, streamConf, "app.example.com")
+		assertContains(t, streamConf, `default           "";`)
+
+		err = env.run(nginx.RoutingParams{
+			Projects: []nginx.Project{project}, Stream: stream,
+			ProxyRunning: true, ProxyReady: true,
+		})
+		if err != nil {
+			t.Fatalf("cycle with cert issue: %v", err)
+		}
+
+		streamConf, ok = env.streamConf(t)
+		if !ok {
+			t.Fatal("stream sni.conf missing after issue")
+		}
+
+		assertContains(t, streamConf, "app.example.com  127.0.0.1:8443;")
+
+		conf, ok := env.conf(t, appConfFile)
+		if !ok {
+			t.Fatal("domain conf missing after issue")
+		}
+
+		assertContains(t, conf, "listen 127.0.0.1:8443 ssl;")
+	})
+
+	t.Run("failed_reissue_with_sni_keeps_https_on_internal_listen", func(t *testing.T) {
+		t.Parallel()
+
+		env := newRouteEnv(t)
+		project := domainProject("mock")
+
+		err := env.runLive(project)
+		if err != nil {
+			t.Fatalf("cycle 1: %v", err)
+		}
+
+		confBefore, ok := env.conf(t, appConfFile)
+		if !ok {
+			t.Fatal("domain conf missing after cycle 1")
+		}
+
+		assertContains(t, confBefore, "listen 443 ssl;", mockDirApp+"/fullchain.pem")
+
+		expired := time.Now().UTC().Add(-2 * certUpdateSec * time.Second).Format(certmanagement.CertTimeLayout)
+		env.writeCertStatus(t, "mock", expired)
+		env.acme.fail = func(string) error { return errTestBoom }
+
+		stream := nginx.StreamSNI{Enabled: true, RejectDefault: true}
+
+		err = env.run(nginx.RoutingParams{
+			Projects: []nginx.Project{project}, Stream: stream,
+			ProxyRunning: true, ProxyReady: true,
+		})
+		if err != nil {
+			t.Fatalf("cycle 2 must soft-fail issuance: %v", err)
+		}
+
+		conf, ok := env.conf(t, appConfFile)
+		if !ok {
+			t.Fatal("domain conf missing after cycle 2")
+		}
+
+		assertContains(t, conf,
+			"listen 127.0.0.1:8443 ssl;",
+			mockDirApp+"/fullchain.pem",
+			"return 301 https://",
+		)
+		assertAbsent(t, conf, "listen 443 ssl;", "listen [::]:443 ssl;")
+
+		streamConf, ok := env.streamConf(t)
+		if !ok {
+			t.Fatal("stream sni.conf missing")
+		}
+
+		assertContains(t, streamConf, "app.example.com  127.0.0.1:8443;")
+	})
+}

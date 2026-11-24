@@ -49,6 +49,34 @@ type ServiceConfig struct {
 	AllowPortsMapping bool // projects[].config.allow-ports-mapping (default false)
 }
 
+// StreamTarget is a Compose service referenced by stream.sni.default or routes[].
+type StreamTarget struct {
+	Project string
+	Service string
+	Port    string
+}
+
+// StreamSNIRoute is one exact SNI → Compose passthrough entry.
+type StreamSNIRoute struct {
+	StreamTarget
+
+	ServerName string
+}
+
+// StreamSNI is the optional settings.yml stream.sni block.
+type StreamSNI struct {
+	Enabled       bool
+	RejectDefault bool
+	Default       StreamTarget // used when !RejectDefault and Enabled (or when default mapping is present)
+	Routes        []StreamSNIRoute
+}
+
+// Settings is the validated settings.yml document for one namespace.
+type Settings struct {
+	Projects []ServiceConfig
+	Stream   StreamSNI
+}
+
 // EnvPrefix returns the UPPERCASE project name prefix used for infra .env keys (e.g. "SCRAPIN__").
 func (cfg ServiceConfig) EnvPrefix() string {
 	return strings.ToUpper(cfg.Name) + "__"
