@@ -153,7 +153,7 @@ To deploy `apinfra`, you need a **clean Linux virtual machine or bare-metal serv
 Connect to your clean Linux server (Ubuntu) via SSH and execute the following commands:
 
 ```bash
-curl -L -O https://github.com/uservseatb/apinfra/releases/download/v0.5.0/apinfra_0.5.0_amd64.deb
+curl -L -O https://github.com/uservseatb/apinfra/releases/download/v0.6.0/apinfra_0.6.0_amd64.deb
 
 sudo apt update
 sudo apt install -y ./apinfra_*.deb
