@@ -357,6 +357,35 @@ func TestReadSettings_Projects(t *testing.T) {
 			raw:  doc(project("off", ln("enabled: false"))),
 			want: nil,
 		},
+	}
+
+	for _, tcase := range tests {
+		t.Run(tcase.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := readSettings(tcase.raw)
+			if err != nil {
+				t.Fatalf("ReadSettings: %v", err)
+			}
+
+			assertServiceConfigsEqual(t, got, tcase.want)
+		})
+	}
+}
+
+func TestReadSettings_Projects_Proxies(t *testing.T) {
+	t.Parallel()
+
+	const (
+		secProd = int64(5184000)
+		secMock = int64(2592000)
+	)
+
+	tests := []struct {
+		name string
+		raw  string
+		want []config.ServiceConfig
+	}{
 		{
 			name: "proxies_single_route",
 			raw: doc(project("shop", ln(
